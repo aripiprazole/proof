@@ -20,6 +20,7 @@ pub enum Token<'src> {
     Let,
     Data,
     In,
+    Val,
     Id(&'src str),
     Str(&'src str),
     Cons(&'src str),
@@ -30,7 +31,8 @@ pub enum Token<'src> {
 /// Parameters are a list of implicit parameters.
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub struct Parameters {
-    pub implicit_parameters: Vec<(Identifier, Term)>,
+    pub implicit_parameters: Vec<(Pattern, Option<Term>)>,
+    pub explicit_parameters: Vec<(Pattern, Option<Term>)>,
 }
 
 /// A data statement is used to declare a new algebraic
@@ -39,24 +41,16 @@ pub struct Parameters {
 pub struct DataStmt {
     pub name: Constructor,
     pub parameters: Parameters,
-    pub type_rep: Term,
+    pub type_rep: Option<Term>,
     pub constructors: Vec<(Constructor, Term)>,
-}
-
-/// A clause is used to represent a pattern matching case.
-#[derive(Debug, Hash, PartialEq, Eq, Clone)]
-pub struct Clause {
-    pub patterns: Vec<Pattern>,
-    pub value: Spanned<TermKind>,
 }
 
 /// A val statement is used to declare a new value.
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub struct ValStmt {
     pub name: Constructor,
-    pub parameters: Parameters,
-    pub type_rep: Spanned<TermKind>,
-    pub constructors: Vec<Clause>,
+    pub type_rep: Option<Term>,
+    pub clauses: Vec<(Vec<Pattern>, Term)>,
 }
 
 /// A proof file is a list of statements.
@@ -402,13 +396,14 @@ pub fn lexer<'src>() -> impl Parser<'src, &'src str, Vec<Spanned<Token<'src>>>, 
         .slice()
         .map(Token::Id);
 
-    let ctrl = one_of("()[]{}:\\").map(Token::Ctrl).labelled("ctrl");
+    let ctrl = one_of("()[]{}:\\|").map(Token::Ctrl).labelled("ctrl");
 
     num.or(op)
         .or(ctrl)
         .or(keyword("let").to(Token::Let))
         .or(keyword("data").to(Token::Let))
         .or(keyword("in").to(Token::In))
+        .or(keyword("val").to(Token::Val))
         .or(cons)
         .or(id)
         .map_with_span(spanned)
@@ -491,7 +486,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             .map_with_state(|value, _, state: &mut TermState| state.terms.intern(value));
 
         let let_expr = just(Token::Let)
-            .then(pattern_parser)
+            .then(pattern_parser.clone())
             .then_ignore(just(Token::Id("=")))
             .then(expr.clone())
             .then_ignore(just(Token::In))
@@ -505,12 +500,101 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
 
     let stmt_parser = {
         let expr_stmt = expr_parser
+            .clone()
             .map(StmtKind::Term)
             .map_with_span(spanned)
             .map_with_state(|value, _, state: &mut TermState| state.stmts.intern(value))
             .labelled("expression statement");
 
-        expr_stmt
+        let type_rep = just(Token::Ctrl(':'))
+            .then(expr_parser.clone())
+            .map(|(_, type_rep)| type_rep);
+
+        let constructors = just(Token::Data)
+            .then(select! { Token::Cons(str) => str })
+            .then_ignore(just(Token::Ctrl(':')))
+            .then(expr_parser.clone())
+            .map(|((_, name), type_rep)| (name.to_string(), type_rep))
+            .labelled("constructor");
+
+        let parameter = pattern_parser.clone().then(type_rep.clone().or_not());
+
+        let implicit_parameters = parameter
+            .clone()
+            .separated_by(just(Token::Ctrl(',')))
+            .collect::<Vec<_>>()
+            .delimited_by(just(Token::Ctrl('[')), just(Token::Ctrl(']')));
+
+        let explicit_parameters = parameter
+            .clone()
+            .separated_by(just(Token::Ctrl(',')))
+            .collect::<Vec<_>>()
+            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')));
+
+        let data_stmt = just(Token::Data)
+            .then(select! { Token::Cons(str) => str })
+            .then(type_rep.clone().or_not())
+            .then(implicit_parameters.or_not())
+            .then(explicit_parameters.or_not())
+            .then(
+                constructors
+                    .repeated()
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(Token::Ctrl('{')), just(Token::Ctrl('}'))),
+            )
+            .map(|(((((_, name), type_rep), implicits), explicits), cons)| {
+                StmtKind::Data(DataStmt {
+                    name: name.into(),
+                    parameters: Parameters {
+                        implicit_parameters: implicits.unwrap_or_default(),
+                        explicit_parameters: explicits.unwrap_or_default(),
+                    },
+                    type_rep,
+                    constructors: cons,
+                })
+            })
+            .map_with_span(spanned)
+            .map_with_state(|value, _, state: &mut TermState| state.stmts.intern(value));
+
+        let clause = just(Token::Ctrl('|'))
+            .then(
+                pattern_parser
+                    .clone()
+                    .separated_by(just(Token::Ctrl(',')))
+                    .collect::<Vec<_>>(),
+            )
+            .then_ignore(just(Token::Id("=")))
+            .then(expr_parser.clone())
+            .map(|((_, pattern), expr)| (pattern, expr));
+
+        let val_stmt = just(Token::Val)
+            .then(select! { Token::Cons(str) => str })
+            .then(type_rep.clone().or_not())
+            .then(clause.repeated().collect::<Vec<_>>().or_not())
+            .try_map(|(((_, name), type_rep), clauses): (_, _), span| {
+                let clauses: Vec<_> = clauses.unwrap_or_default();
+
+                match type_rep {
+                    Some(type_rep) => Ok(StmtKind::Val(ValStmt {
+                        name: name.into(),
+                        type_rep: Some(type_rep),
+                        clauses,
+                    })),
+                    None if clauses.is_empty() => Err(Rich::custom(
+                        span,
+                        "you can either specify a type to a value or clauses, but not both",
+                    )),
+                    None => Ok(StmtKind::Val(ValStmt {
+                        name: name.into(),
+                        type_rep: None,
+                        clauses,
+                    })),
+                }
+            })
+            .map_with_span(spanned)
+            .map_with_state(|value, _, state: &mut TermState| state.stmts.intern(value));
+
+        expr_stmt.or(data_stmt).or(val_stmt).labelled("statement")
     };
 
     stmt_parser
