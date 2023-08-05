@@ -9,3 +9,5 @@ version = "0.0.1"
 ariadne = "0.3.0"
 chumsky = { version = "1.0.0-alpha.4", features = ["label"] }
 fxhash = "0.2.1"
+imbl = "2.0.0"
+interner = "0.2.1"
