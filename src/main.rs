@@ -28,7 +28,7 @@ pub enum Token<'src> {
     Let,
     Data,
     In,
-    Val,
+    Fun,
     Identifier(&'src str),
     String(&'src str),
     Constructor(&'src str),
@@ -42,7 +42,7 @@ impl<'src> Display for Token<'src> {
             Token::Let => write!(f, "let"),
             Token::Data => write!(f, "data"),
             Token::In => write!(f, "in"),
-            Token::Val => write!(f, "val"),
+            Token::Fun => write!(f, "fun"),
             Token::Identifier(id) => write!(f, "{id}"),
             Token::String(str) => write!(f, "\"{str}\""),
             Token::Constructor(cons) => write!(f, "{cons}"),
@@ -209,7 +209,7 @@ impl Debug for ClauseDebug<'_> {
 
 /// A val statement is used to declare a new value.
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
-pub struct ValStmt {
+pub struct FunStmt {
     pub name: Constructor,
     pub type_rep: Term,
     pub clauses: Vec<Clause>,
@@ -252,7 +252,7 @@ pub enum StmtKind {
     #[default]
     Error,
     Data(DataStmt),
-    Val(ValStmt),
+    Fun(FunStmt),
     Term(Term),
 }
 
@@ -298,8 +298,8 @@ impl Debug for StmtDebug<'_> {
                         .collect::<Vec<_>>(),
                 )
                 .finish(),
-            StmtKind::Val(val_stmt) => f
-                .debug_struct("ValStmt")
+            StmtKind::Fun(val_stmt) => f
+                .debug_struct("FunStmt")
                 .field("name", &val_stmt.name)
                 .field("type_rep", &val_stmt.type_rep.debug(self.state))
                 .field(
@@ -786,7 +786,7 @@ pub fn lexer<'src>() -> impl Parser<'src, &'src str, Vec<Spanned<Token<'src>>>, 
         .or(keyword("let").to(Token::Let))
         .or(keyword("data").to(Token::Data))
         .or(keyword("in").to(Token::In))
-        .or(keyword("val").to(Token::Val))
+        .or(keyword("fun").to(Token::Fun))
         .or(cons)
         .or(id)
         .map_with_span(spanned)
@@ -1058,14 +1058,15 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
         });
 
         let val_stmt = recursive(|_| {
-            just(Token::Val)
+            just(Token::Fun)
                 .then(select! { Token::Identifier(str) => str })
                 .then(type_rep.clone())
                 .then(clause.repeated().collect::<Vec<_>>().or_not())
+                .then_ignore(just(Token::Ctrl(';')))
                 .map(|(((_, name), type_rep), clauses)| {
                     let clauses: Vec<_> = clauses.unwrap_or_default();
 
-                    StmtKind::Val(ValStmt {
+                    StmtKind::Fun(FunStmt {
                         name: name.into(),
                         type_rep,
                         clauses,
@@ -1184,10 +1185,13 @@ fn main() {
         ", False : Bool",
         "}",
         "",
-        "val and : (x: Bool) -> Bool -> Bool",
+        "fun and : (x: Bool) -> Bool -> Bool",
         "        | True, True   = True",
-        "        | _   , False  = False",
-        "        | _   , _      = False",
+        "        | _,    False  = False",
+        "        | _,    _      = False",
+        "        ;",
+        "",
+        "and True False"
     ]);
 
     println!("{:#?}", ast.debug(&state));
