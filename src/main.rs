@@ -311,10 +311,7 @@ impl Debug for StmtDebug<'_> {
                         .collect::<Vec<_>>(),
                 )
                 .finish(),
-            StmtKind::Term(term) => f
-                .debug_struct("TermStmt")
-                .field("term", &term.debug(self.state))
-                .finish(),
+            StmtKind::Term(term) => term.debug(self.state).fmt(f),
         }
     }
 }
