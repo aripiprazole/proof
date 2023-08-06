@@ -11,7 +11,8 @@ use chumsky::{
     error::Error,
     extra::{self, Err},
     prelude::{Input, Rich},
-    primitive::{any, just, one_of},
+    primitive::{any, end, just, one_of},
+    recovery::skip_then_retry_until,
     recursive::recursive,
     select,
     span::SimpleSpan,
@@ -780,17 +781,23 @@ pub fn lexer<'src>() -> impl Parser<'src, &'src str, Vec<Spanned<Token<'src>>>, 
 
     let ctrl = one_of("()[]{}:\\|,;").map(Token::Ctrl).labelled("ctrl");
 
-    num.or(op)
-        .or(ctrl)
-        .or(keyword("let").to(Token::Let))
+    let comment = just("//")
+        .then(any().and_is(just('\n').not()).repeated())
+        .padded();
+
+    num.or(keyword("let").to(Token::Let))
         .or(keyword("data").to(Token::Data))
         .or(keyword("in").to(Token::In))
         .or(keyword("fun").to(Token::Fun))
         .or(keyword("where").to(Token::Where))
+        .or(op)
+        .or(ctrl)
         .or(cons)
         .or(id)
         .map_with_span(spanned)
+        .padded_by(comment.repeated())
         .padded()
+        .recover_with(skip_then_retry_until(any().ignored(), end()))
         .repeated()
         .collect()
 }
@@ -1180,6 +1187,7 @@ fn main() {
     let mut state = TermState::default();
     let ast = state.parse([
         // Source code
+        "// simple file",
         "data Bool : Type where",
         "  True : Bool",
         ", False : Bool",
@@ -1190,7 +1198,7 @@ fn main() {
         "        | _,    _      = False",
         "        ;",
         "",
-        "and True False"
+        "and True False",
     ]);
 
     println!("{:#?}", ast.debug(&state));
