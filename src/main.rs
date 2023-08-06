@@ -29,10 +29,10 @@ pub enum Token<'src> {
     Data,
     In,
     Val,
-    Id(&'src str),
-    Str(&'src str),
-    Con(&'src str),
-    Num(isize),
+    Identifier(&'src str),
+    String(&'src str),
+    Constructor(&'src str),
+    Number(isize),
     Ctrl(char),
 }
 
@@ -43,10 +43,10 @@ impl<'src> Display for Token<'src> {
             Token::Data => write!(f, "data"),
             Token::In => write!(f, "in"),
             Token::Val => write!(f, "val"),
-            Token::Id(id) => write!(f, "{id}"),
-            Token::Str(str) => write!(f, "\"{str}\""),
-            Token::Con(cons) => write!(f, "{cons}"),
-            Token::Num(num) => write!(f, "{num}"),
+            Token::Identifier(id) => write!(f, "{id}"),
+            Token::String(str) => write!(f, "\"{str}\""),
+            Token::Constructor(cons) => write!(f, "{cons}"),
+            Token::Number(num) => write!(f, "{num}"),
             Token::Ctrl(ctrl) => write!(f, "{ctrl}"),
         }
     }
@@ -333,8 +333,8 @@ impl Debug for StmtDebug<'_> {
 pub enum PatternKind {
     #[default]
     Error,
-    Var(Identifier),
-    Con(Constructor, Vec<Pattern>),
+    Variable(Identifier),
+    Constructor(Constructor, Vec<Pattern>),
 }
 
 /// An implementation of the `HasData` trait for the `TermKind`
@@ -369,9 +369,9 @@ impl Debug for PatternDebug<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.state.patterns.get(self.pattern) {
             PatternKind::Error => write!(f, "Error"),
-            PatternKind::Var(name) => write!(f, "Var({})", name),
-            PatternKind::Con(name, patterns) => f
-                .debug_struct("Cons")
+            PatternKind::Variable(name) => write!(f, "Variable({})", name),
+            PatternKind::Constructor(name, patterns) => f
+                .debug_struct("Constructor")
                 .field("name", &name)
                 .field(
                     "patterns",
@@ -435,18 +435,18 @@ pub enum TermKind {
 
     /// The literal value expression is used to represent a literal
     /// value.
-    Num(isize),
+    Number(isize),
 
     /// The string literal expression is used to represent a string
     /// literal.
-    Str(String),
+    String(String),
 
     /// The string literal expression is used to represent a
     /// constructor name.
-    Con(String),
+    Constructor(String),
 
     /// The variable expression is used to represent a variable
-    Var(Hole),
+    Hole(Hole),
 
     /// The annotation expression is used to represent an annotated
     /// expression with a type.
@@ -457,11 +457,11 @@ pub enum TermKind {
     ///
     /// The first argument is the name of the parameter, and the
     /// second argument is the value of the parameter.
-    Abs(Pattern, Term),
+    Lambda(Pattern, Term),
 
     /// The application expression is used to represent a function
     /// application.
-    App(Term, Term),
+    Apply(Term, Term),
 
     /// The let expression is used to represent a let binding
     /// expression.
@@ -509,25 +509,25 @@ impl Debug for TermDebug<'_> {
         match self.state.terms.get(self.term) {
             TermKind::Error => write!(f, "Error"),
             TermKind::Type(level) => write!(f, "Type({})", level),
-            TermKind::Num(num) => write!(f, "Num({})", num),
-            TermKind::Str(str) => write!(f, "Str({})", str),
-            TermKind::Con(con) => write!(f, "Con({})", con),
-            TermKind::Var(var) => write!(f, "Var({})", var.name),
+            TermKind::Number(num) => write!(f, "Numer({})", num),
+            TermKind::String(str) => write!(f, "String({})", str),
+            TermKind::Constructor(con) => write!(f, "Constructor({})", con),
+            TermKind::Hole(var) => write!(f, "Hole({})", var.name),
             TermKind::Ann(value, against) => write!(
                 f,
                 "Ann({:?}, {:?})",
                 value.debug(self.state),
                 against.debug(self.state)
             ),
-            TermKind::Abs(parameter, value) => write!(
+            TermKind::Lambda(parameter, value) => write!(
                 f,
-                "Abs({:?}, {:?})",
+                "Lambda({:?}, {:?})",
                 parameter.debug(self.state),
                 value.debug(self.state)
             ),
-            TermKind::App(callee, argument) => write!(
+            TermKind::Apply(callee, argument) => write!(
                 f,
-                "App({:?}, {:?})",
+                "Apply({:?}, {:?})",
                 callee.debug(self.state),
                 argument.debug(self.state)
             ),
@@ -717,14 +717,14 @@ pub fn lexer<'src>() -> impl Parser<'src, &'src str, Vec<Spanned<Token<'src>>>, 
                 return Err(Rich::custom(span, "invalid integer"));
             };
 
-            Ok(Token::Num(int))
+            Ok(Token::Number(int))
         })
         .labelled("number");
 
-    let op = one_of("+*-/!^|&<>=")
+    let op = one_of("+*-/!^&<>=")
         .repeated()
         .at_least(1)
-        .map_slice(Token::Con)
+        .map_slice(Token::Identifier)
         .labelled("operator");
 
     // An identifier is defined as an ASCII alphabetic character or an underscore followed by any number of alphanumeric
@@ -751,7 +751,7 @@ pub fn lexer<'src>() -> impl Parser<'src, &'src str, Vec<Spanned<Token<'src>>>, 
                 .repeated(),
         )
         .slice()
-        .map(Token::Con);
+        .map(Token::Constructor);
 
     // An identifier is defined as an ASCII alphabetic character or an underscore followed by any number of alphanumeric
     // characters or underscores. The regex pattern for it is `[a-zA-Z_'.][a-zA-Z0-9_'.]*`.
@@ -775,7 +775,7 @@ pub fn lexer<'src>() -> impl Parser<'src, &'src str, Vec<Spanned<Token<'src>>>, 
                 .repeated(),
         )
         .slice()
-        .map(Token::Id);
+        .map(Token::Identifier);
 
     let ctrl = one_of("()[]{}:\\|,;").map(Token::Ctrl).labelled("ctrl");
 
@@ -810,33 +810,39 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
 > {
     let pattern_parser = recursive(move |pattern| {
         let id = select! {
-            Token::Id(str) => PatternKind::Var(str.into()),
+            Token::Identifier(str) => PatternKind::Variable(str.into()),
         }
         .map_with_span(spanned)
         .map_with_state(|value, _, state: &mut TermState| state.patterns.intern(value))
         .labelled("identifier pattern");
 
+        let cons_id = select! { Token::Constructor(str) => str }
+            .map(|name: &str| PatternKind::Constructor(name.into(), vec![]))
+            .map_with_span(spanned)
+            .map_with_state(|value, _, state: &mut TermState| state.patterns.intern(value))
+            .labelled("constructor identifier pattern");
+
         // A cons pattern is defined as a name followed by a list of patterns.
         let cons = just(Token::Ctrl('('))
-            .then(select! { Token::Con(str) => str })
-            .then(pattern.clone().repeated().collect())
+            .then(select! { Token::Constructor(str) => str })
+            .then(pattern.clone().repeated().collect::<Vec<_>>())
             .then_ignore(just(Token::Ctrl(')')))
-            .map(|((_, name), patterns): (_, Vec<_>)| PatternKind::Con(name.into(), patterns))
+            .map(|((_, name), patterns)| PatternKind::Constructor(name.into(), patterns))
             .map_with_span(spanned)
             .map_with_state(|value, _, state: &mut TermState| state.patterns.intern(value))
             .labelled("constructor pattern");
 
-        id.or(cons).labelled("pattern")
+        id.or(cons).or(cons_id).labelled("pattern")
     });
 
     let expr_parser = recursive(|expr| {
         // Defines the parser for the value. It is the base of the
         // expression parser.
         let value = select! {
-            Token::Num(number) => TermKind::Num(number),
-            Token::Id(id) => TermKind::Var(Hole::new(id.into())),
-            Token::Con(id) => TermKind::Con(id.into()),
-            Token::Str(str) => TermKind::Str(str.into()),
+            Token::Number(number) => TermKind::Number(number),
+            Token::Identifier(id) => TermKind::Hole(Hole::new(id.into())),
+            Token::Constructor(id) => TermKind::Constructor(id.into()),
+            Token::String(str) => TermKind::String(str.into()),
         }
         .map_with_span(spanned)
         .map_with_state(|value, _, state: &mut TermState| state.terms.intern(value))
@@ -856,7 +862,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 let end = state.terms.span(next);
 
                 let span = (first.start..end.end).into();
-                let kind = TermKind::App(acc, next);
+                let kind = TermKind::Apply(acc, next);
 
                 state.terms.intern(spanned(kind, span))
             },
@@ -864,16 +870,16 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
 
         let abs = just(Token::Ctrl('\\'))
             .then(pattern_parser.clone())
-            .then_ignore(just(Token::Id(".")))
+            .then_ignore(just(Token::Identifier(".")))
             .then(expr.clone())
-            .map(|((_, pattern), expr)| TermKind::Abs(pattern, expr))
+            .map(|((_, pattern), expr)| TermKind::Lambda(pattern, expr))
             .map_with_span(spanned)
             .map_with_state(|value, _, state: &mut TermState| state.terms.intern(value))
             .labelled("lambda exprression");
 
         let let_expr = just(Token::Let)
             .then(pattern_parser.clone())
-            .then_ignore(just(Token::Id("=")))
+            .then_ignore(just(Token::Identifier("=")))
             .then(expr.clone())
             .then_ignore(just(Token::In))
             .then(expr.clone())
@@ -897,7 +903,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             .then(expr_parser.clone())
             .map(|(_, type_rep)| type_rep);
 
-        let constructors = select! { Token::Con(str) => str }
+        let constructors = select! { Token::Constructor(str) => str }
             .then(type_rep.clone().or_not())
             .map(|(name, type_rep)| DataConstructor {
                 name: name.into(),
@@ -925,7 +931,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             .labelled("explicit parameters");
 
         let data_stmt = just(Token::Data)
-            .then(select! { Token::Con(str) => str })
+            .then(select! { Token::Constructor(str) => str })
             .then(type_rep.clone().or_not())
             .then(implicit_parameters.or_not())
             .then(explicit_parameters.or_not())
@@ -957,12 +963,12 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                     .separated_by(just(Token::Ctrl(',')))
                     .collect::<Vec<_>>(),
             )
-            .then_ignore(just(Token::Id("=")))
+            .then_ignore(just(Token::Identifier("=")))
             .then(expr_parser.clone())
             .map(|((_, patterns), term)| Clause { patterns, term });
 
         let val_stmt = just(Token::Val)
-            .then(select! { Token::Con(str) => str })
+            .then(select! { Token::Identifier(str) => str })
             .then(type_rep.clone().or_not())
             .then(clause.repeated().collect::<Vec<_>>().or_not())
             .try_map(|(((_, name), type_rep), clauses): (_, _), span| {
@@ -1098,7 +1104,7 @@ fn main() {
         ", False : Bool",
         "}",
         "",
-        "val Not : Bool -> Bool",
+        "val not : Bool -> Bool",
         "        | True = False",
         "        | False = True",
     ]);
