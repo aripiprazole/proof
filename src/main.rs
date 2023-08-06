@@ -302,9 +302,19 @@ impl Debug for StmtDebug<'_> {
                 .debug_struct("ValStmt")
                 .field("name", &val_stmt.name)
                 .field("type_rep", &val_stmt.type_rep.debug(self.state))
-                .field("clauses", &val_stmt.clauses)
+                .field(
+                    "clauses",
+                    &val_stmt
+                        .clauses
+                        .iter()
+                        .map(|value| value.debug(self.state))
+                        .collect::<Vec<_>>(),
+                )
                 .finish(),
-            StmtKind::Term(_) => todo!(),
+            StmtKind::Term(term) => f
+                .debug_struct("TermStmt")
+                .field("term", &term.debug(self.state))
+                .finish(),
         }
     }
 }
@@ -833,6 +843,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
         let value = select! {
             Token::Number(number) => TermKind::Number(number),
             Token::Identifier(id) => TermKind::Hole(Hole::new(id.into())),
+            Token::Constructor(id) if id == "Type" => TermKind::Type(0),
             Token::Constructor(id) => TermKind::Constructor(id.into()),
             Token::String(str) => TermKind::String(str.into()),
         }
