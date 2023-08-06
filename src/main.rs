@@ -60,7 +60,7 @@ pub struct DataStmt {
     pub name: Constructor,
     pub parameters: Parameters,
     pub type_rep: Option<Term>,
-    pub constructors: Vec<(Constructor, Term)>,
+    pub constructors: Vec<(Constructor, Option<Term>)>,
 }
 
 /// A val statement is used to declare a new value.
@@ -449,12 +449,12 @@ pub fn lexer<'src>() -> impl Parser<'src, &'src str, Vec<Spanned<Token<'src>>>, 
         .slice()
         .map(Token::Id);
 
-    let ctrl = one_of("()[]{}:\\|").map(Token::Ctrl).labelled("ctrl");
+    let ctrl = one_of("()[]{}:\\|,;").map(Token::Ctrl).labelled("ctrl");
 
     num.or(op)
         .or(ctrl)
         .or(keyword("let").to(Token::Let))
-        .or(keyword("data").to(Token::Let))
+        .or(keyword("data").to(Token::Data))
         .or(keyword("in").to(Token::In))
         .or(keyword("val").to(Token::Val))
         .or(cons)
@@ -569,11 +569,9 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             .then(expr_parser.clone())
             .map(|(_, type_rep)| type_rep);
 
-        let constructors = just(Token::Data)
-            .then(select! { Token::Con(str) => str })
-            .then_ignore(just(Token::Ctrl(':')))
-            .then(expr_parser.clone())
-            .map(|((_, name), type_rep)| (name.to_string(), type_rep))
+        let constructors = select! { Token::Con(str) => str }
+            .then(type_rep.clone().or_not())
+            .map(|(name, type_rep)| (name.to_string(), type_rep))
             .labelled("data constructor");
 
         let parameter = pattern_parser.clone().then(type_rep.clone().or_not());
@@ -599,7 +597,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             .then(explicit_parameters.or_not())
             .then(
                 constructors
-                    .repeated()
+                    .separated_by(just(Token::Ctrl(',')))
                     .collect::<Vec<_>>()
                     .delimited_by(just(Token::Ctrl('{')), just(Token::Ctrl('}'))),
             )
@@ -656,7 +654,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             .map_with_span(spanned)
             .map_with_state(|value, _, state: &mut TermState| state.stmts.intern(value));
 
-        expr_stmt.or(data_stmt).or(val_stmt).labelled("statement")
+        data_stmt.or(val_stmt).or(expr_stmt).labelled("statement")
     };
 
     stmt_parser
@@ -761,6 +759,10 @@ fn main() {
 
     let ast = state.parse([
         // Source code
+        "data Bool {",
+        "  True : Bool",
+        ", False : Bool",
+        "}",
         "val Not : Bool -> Bool",
     ]);
 
