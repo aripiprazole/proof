@@ -55,7 +55,7 @@ impl<'src> Display for Token<'src> {
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub struct Parameter {
     pub pattern: Pattern,
-    pub type_rep: Option<Term>,
+    pub type_rep: Term,
 }
 
 impl Parameter {
@@ -77,10 +77,7 @@ impl Debug for ParameterDebug<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Parameter")
             .field("pattern", &self.parameter.pattern.debug(self.state))
-            .field(
-                "type_rep",
-                &self.parameter.type_rep.map(|value| value.debug(self.state)),
-            )
+            .field("type_rep", &self.parameter.type_rep.debug(self.state))
             .finish()
     }
 }
@@ -135,7 +132,7 @@ impl Debug for ParametersDebug<'_> {
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub struct DataConstructor {
     pub name: Constructor,
-    pub type_rep: Option<Term>,
+    pub type_rep: Term,
 }
 
 impl DataConstructor {
@@ -157,13 +154,7 @@ impl Debug for DataConstructorDebug<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DataConstructor")
             .field("name", &self.constructor.name)
-            .field(
-                "type_rep",
-                &self
-                    .constructor
-                    .type_rep
-                    .map(|value| value.debug(self.state)),
-            )
+            .field("type_rep", &self.constructor.type_rep.debug(self.state))
             .finish()
     }
 }
@@ -174,7 +165,7 @@ impl Debug for DataConstructorDebug<'_> {
 pub struct DataStmt {
     pub name: Constructor,
     pub parameters: Parameters,
-    pub type_rep: Option<Term>,
+    pub type_rep: Term,
     pub constructors: Vec<DataConstructor>,
 }
 
@@ -220,7 +211,7 @@ impl Debug for ClauseDebug<'_> {
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub struct ValStmt {
     pub name: Constructor,
-    pub type_rep: Option<Term>,
+    pub type_rep: Term,
     pub clauses: Vec<Clause>,
 }
 
@@ -297,10 +288,7 @@ impl Debug for StmtDebug<'_> {
             StmtKind::Data(data_stmt) => f
                 .debug_struct("DataStmt")
                 .field("name", &data_stmt.name)
-                .field(
-                    "type_rep",
-                    &data_stmt.type_rep.map(|value| value.debug(self.state)),
-                )
+                .field("type_rep", &data_stmt.type_rep.debug(self.state))
                 .field(
                     "constructors",
                     &data_stmt
@@ -313,10 +301,7 @@ impl Debug for StmtDebug<'_> {
             StmtKind::Val(val_stmt) => f
                 .debug_struct("ValStmt")
                 .field("name", &val_stmt.name)
-                .field(
-                    "type_rep",
-                    &val_stmt.type_rep.map(|value| value.debug(self.state)),
-                )
+                .field("type_rep", &val_stmt.type_rep.debug(self.state))
                 .field("clauses", &val_stmt.clauses)
                 .finish(),
             StmtKind::Term(_) => todo!(),
@@ -387,10 +372,10 @@ impl Debug for PatternDebug<'_> {
 
 /// A variable is a name paired with a hole. The hole is used to
 /// represent the value of the variable.
-#[derive(Eq, Clone)]
+#[derive(Default, Eq, Clone)]
 pub struct Hole {
     /// The name of the variable.
-    pub name: Identifier,
+    pub name: Option<Identifier>,
     pub hole: Rc<RefCell<Option<Term>>>,
 }
 
@@ -398,7 +383,7 @@ impl Hole {
     /// Creates a new hole without a value filled.
     pub fn new(name: Identifier) -> Self {
         Self {
-            name,
+            name: Some(name),
             hole: Rc::new(RefCell::new(None)),
         }
     }
@@ -406,7 +391,7 @@ impl Hole {
 
 impl Debug for Hole {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "?{}", self.name)
+        write!(f, "?{}", self.name.clone().unwrap_or("_".into()))
     }
 }
 
@@ -418,7 +403,14 @@ impl Hash for Hole {
 
 impl PartialEq for Hole {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
+        match (&self.name, &other.name) {
+            (Some(name), Some(other_name)) => name == other_name,
+            _ => {
+                let value = self.hole.borrow();
+                let other_value = other.hole.borrow();
+                (&*value).eq(&*other_value)
+            }
+        }
     }
 }
 
@@ -512,7 +504,7 @@ impl Debug for TermDebug<'_> {
             TermKind::Number(num) => write!(f, "Numer({})", num),
             TermKind::String(str) => write!(f, "String({})", str),
             TermKind::Constructor(con) => write!(f, "Constructor({})", con),
-            TermKind::Hole(var) => write!(f, "Hole({})", var.name),
+            TermKind::Hole(var) => write!(f, "Hole({})", var.name.unwrap_or("_".into())),
             TermKind::Ann(value, against) => write!(
                 f,
                 "Ann({:?}, {:?})",
@@ -901,10 +893,18 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
 
         let type_rep = just(Token::Ctrl(':'))
             .then(expr_parser.clone())
-            .map(|(_, type_rep)| type_rep);
+            .map(|(_, type_rep)| type_rep)
+            .or_not()
+            .map_with_state(|type_rep, _, state: &mut TermState| match type_rep {
+                Some(type_rep) => type_rep,
+                None => state.terms.intern(Spanned {
+                    data: TermKind::Hole(Hole::default()),
+                    span: (0..0).into(),
+                }),
+            });
 
         let constructors = select! { Token::Constructor(str) => str }
-            .then(type_rep.clone().or_not())
+            .then(type_rep.clone())
             .map(|(name, type_rep)| DataConstructor {
                 name: name.into(),
                 type_rep,
@@ -913,7 +913,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
 
         let parameter = pattern_parser
             .clone()
-            .then(type_rep.clone().or_not())
+            .then(type_rep.clone())
             .map(|(pattern, type_rep)| Parameter { pattern, type_rep });
 
         let implicit_parameters = parameter
@@ -932,7 +932,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
 
         let data_stmt = just(Token::Data)
             .then(select! { Token::Constructor(str) => str })
-            .then(type_rep.clone().or_not())
+            .then(type_rep.clone())
             .then(implicit_parameters.or_not())
             .then(explicit_parameters.or_not())
             .then(
@@ -941,7 +941,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                     .collect::<Vec<_>>()
                     .delimited_by(just(Token::Ctrl('{')), just(Token::Ctrl('}'))),
             )
-            .map(|(((((_, name), type_rep), implicits), explicits), cons)| {
+            .map(|(((((_, name), type_rep), implicits), explicits), vec)| {
                 StmtKind::Data(DataStmt {
                     name: name.into(),
                     parameters: Parameters {
@@ -949,7 +949,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                         explicit_parameters: explicits.unwrap_or_default(),
                     },
                     type_rep,
-                    constructors: cons,
+                    constructors: vec,
                 })
             })
             .map_with_span(spanned)
@@ -969,27 +969,16 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
 
         let val_stmt = just(Token::Val)
             .then(select! { Token::Identifier(str) => str })
-            .then(type_rep.clone().or_not())
+            .then(type_rep.clone())
             .then(clause.repeated().collect::<Vec<_>>().or_not())
-            .try_map(|(((_, name), type_rep), clauses): (_, _), span| {
+            .map(|(((_, name), type_rep), clauses)| {
                 let clauses: Vec<_> = clauses.unwrap_or_default();
 
-                match type_rep {
-                    Some(type_rep) => Ok(StmtKind::Val(ValStmt {
-                        name: name.into(),
-                        type_rep: Some(type_rep),
-                        clauses,
-                    })),
-                    None if clauses.is_empty() => Err(Rich::custom(
-                        span,
-                        "you can either specify a type to a value or clauses, but not both",
-                    )),
-                    None => Ok(StmtKind::Val(ValStmt {
-                        name: name.into(),
-                        type_rep: None,
-                        clauses,
-                    })),
-                }
+                StmtKind::Val(ValStmt {
+                    name: name.into(),
+                    type_rep,
+                    clauses,
+                })
             })
             .map_with_span(spanned)
             .map_with_state(|value, _, state: &mut TermState| state.stmts.intern(value));
@@ -1071,7 +1060,7 @@ pub fn report_ariadne_errors(filename: &str, source: &str, errors: Vec<Rich<'_, 
             )
             .with_labels(error.contexts().map(|(label, span)| {
                 Label::new((filename.clone(), span.into_range()))
-                    .with_message(format!("while parsing this {}", label))
+                    .with_message(format!("in the context {}", label))
                     .with_color(Color::Yellow)
             }))
             .finish()
