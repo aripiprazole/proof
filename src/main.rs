@@ -1,4 +1,10 @@
-use std::{cell::RefCell, fmt::Display, hash::Hash, marker::PhantomData, rc::Rc};
+use std::{
+    cell::RefCell,
+    fmt::{Debug, Display},
+    hash::Hash,
+    marker::PhantomData,
+    rc::Rc,
+};
 
 use ariadne::{Color, Label, Report, ReportKind, Source};
 use chumsky::{
@@ -77,9 +83,33 @@ pub struct ProofFile {
     pub statements: Vec<Stmt>,
 }
 
+pub struct ProofFileDebug<'state> {
+    pub state: &'state TermState,
+    pub file: ProofFile,
+}
+
+impl ProofFile {
+    /// Creates a new debug wrapper.
+    pub fn debug<'state>(&self, state: &'state TermState) -> ProofFileDebug<'state> {
+        ProofFileDebug { state, file: self.clone() }
+    }
+}
+
+impl Debug for ProofFileDebug<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = f.debug_list();
+        for stmt in &self.file.statements {
+            debug.entry(&stmt.debug(self.state));
+        }
+        debug.finish()
+    }
+}
+
 /// A statement is a top-level declaration in the language.
-#[derive(Debug, Hash, PartialEq, Eq, Clone)]
+#[derive(Default, Debug, Hash, PartialEq, Eq, Clone)]
 pub enum StmtKind {
+    #[default]
+    Error,
     Data(DataStmt),
     Val(ValStmt),
     Term(Term),
@@ -98,15 +128,50 @@ impl HasData for Spanned<StmtKind> {
     }
 }
 
+pub struct StmtDebug<'state> {
+    pub state: &'state TermState,
+    pub stmt: Stmt,
+}
+
+impl Stmt {
+    /// Creates a new debug wrapper.
+    pub fn debug<'state>(&self, state: &'state TermState) -> StmtDebug<'state> {
+        StmtDebug { state, stmt: *self }
+    }
+}
+
+impl Debug for StmtDebug<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.state.stmts.get(self.stmt) {
+            StmtKind::Error => write!(f, "Error"),
+            StmtKind::Data(data_stmt) => f
+                .debug_struct("DataStmt")
+                .field("name", &data_stmt.name)
+                .field("type_rep", &data_stmt.type_rep)
+                .field("constructors", &data_stmt.constructors)
+                .finish(),
+            StmtKind::Val(val_stmt) => f
+                .debug_struct("ValStmt")
+                .field("name", &val_stmt.name)
+                .field("type_rep", &val_stmt.type_rep)
+                .field("clauses", &val_stmt.clauses)
+                .finish(),
+            StmtKind::Term(_) => todo!(),
+        }
+    }
+}
+
 /// A pattern is used to represent a value that is being matched
 /// against.
 ///
 /// The pattern can be a variable or a constructor applied to a list
 /// of patterns.
-#[derive(Debug, Hash, PartialEq, Eq, Clone)]
+#[derive(Default, Debug, Hash, PartialEq, Eq, Clone)]
 pub enum PatternKind {
+    #[default]
+    Error,
     Var(Identifier),
-    Cons(Constructor, Vec<Pattern>),
+    Con(Constructor, Vec<Pattern>),
 }
 
 /// An implementation of the `HasData` trait for the `TermKind`
@@ -122,16 +187,51 @@ impl HasData for Spanned<PatternKind> {
     }
 }
 
+pub struct PatternDebug<'state> {
+    pub state: &'state TermState,
+    pub pattern: Pattern,
+}
+
+impl Pattern {
+    /// Creates a new debug wrapper.
+    pub fn debug<'state>(&self, state: &'state TermState) -> PatternDebug<'state> {
+        PatternDebug {
+            state,
+            pattern: *self,
+        }
+    }
+}
+
+impl Debug for PatternDebug<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.state.patterns.get(self.pattern) {
+            PatternKind::Error => write!(f, "Error"),
+            PatternKind::Var(name) => write!(f, "Var({})", name),
+            PatternKind::Con(name, patterns) => f
+                .debug_struct("Cons")
+                .field("name", &name)
+                .field(
+                    "patterns",
+                    &patterns
+                        .into_iter()
+                        .map(|pattern| pattern.debug(self.state))
+                        .collect::<Vec<_>>(),
+                )
+                .finish(),
+        }
+    }
+}
+
 /// A variable is a name paired with a hole. The hole is used to
 /// represent the value of the variable.
-#[derive(Debug, Eq, Clone)]
-pub struct Var {
+#[derive(Eq, Clone)]
+pub struct Hole {
     /// The name of the variable.
     pub name: Identifier,
     pub hole: Rc<RefCell<Option<Term>>>,
 }
 
-impl Var {
+impl Hole {
     /// Creates a new hole without a value filled.
     pub fn new(name: Identifier) -> Self {
         Self {
@@ -141,13 +241,19 @@ impl Var {
     }
 }
 
-impl Hash for Var {
+impl Debug for Hole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "?{}", self.name)
+    }
+}
+
+impl Hash for Hole {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.name.hash(state);
     }
 }
 
-impl PartialEq for Var {
+impl PartialEq for Hole {
     fn eq(&self, other: &Self) -> bool {
         self.name == other.name
     }
@@ -177,7 +283,7 @@ pub enum TermKind {
     Con(String),
 
     /// The variable expression is used to represent a variable
-    Var(Var),
+    Var(Hole),
 
     /// The annotation expression is used to represent an annotated
     /// expression with a type.
@@ -493,7 +599,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             .then(select! { Token::Con(str) => str })
             .then(pattern.clone().repeated().collect())
             .then_ignore(just(Token::Ctrl(')')))
-            .map(|((_, name), patterns): (_, Vec<_>)| PatternKind::Cons(name.into(), patterns))
+            .map(|((_, name), patterns): (_, Vec<_>)| PatternKind::Con(name.into(), patterns))
             .map_with_span(spanned)
             .map_with_state(|value, _, state: &mut TermState| state.patterns.intern(value))
             .labelled("constructor pattern");
@@ -506,7 +612,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
         // expression parser.
         let value = select! {
             Token::Num(number) => TermKind::Num(number),
-            Token::Id(id) => TermKind::Var(Var::new(id.into())),
+            Token::Id(id) => TermKind::Var(Hole::new(id.into())),
             Token::Con(id) => TermKind::Con(id.into()),
             Token::Str(str) => TermKind::Str(str.into()),
         }
@@ -759,12 +865,15 @@ fn main() {
 
     let ast = state.parse([
         // Source code
-        "data Bool {",
+        "data Bool : Type {",
         "  True : Bool",
         ", False : Bool",
         "}",
+        "",
         "val Not : Bool -> Bool",
+        "        | True = False",
+        "        | False = True",
     ]);
 
-    println!("{ast:?}");
+    println!("{:#?}", ast.debug(&state));
 }
