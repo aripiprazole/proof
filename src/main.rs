@@ -29,6 +29,7 @@ pub enum Token<'src> {
     Data,
     In,
     Fun,
+    Where,
     Identifier(&'src str),
     String(&'src str),
     Constructor(&'src str),
@@ -43,6 +44,7 @@ impl<'src> Display for Token<'src> {
             Token::Data => write!(f, "data"),
             Token::In => write!(f, "in"),
             Token::Fun => write!(f, "fun"),
+            Token::Where => write!(f, "where"),
             Token::Identifier(id) => write!(f, "{id}"),
             Token::String(str) => write!(f, "\"{str}\""),
             Token::Constructor(cons) => write!(f, "{cons}"),
@@ -784,6 +786,7 @@ pub fn lexer<'src>() -> impl Parser<'src, &'src str, Vec<Spanned<Token<'src>>>, 
         .or(keyword("data").to(Token::Data))
         .or(keyword("in").to(Token::In))
         .or(keyword("fun").to(Token::Fun))
+        .or(keyword("where").to(Token::Where))
         .or(cons)
         .or(id)
         .map_with_span(spanned)
@@ -1017,11 +1020,11 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .then(type_rep.clone())
                 .then(implicit_parameters.or_not())
                 .then(explicit_parameters.or_not())
+                .then_ignore(just(Token::Where))
                 .then(
                     constructors
                         .separated_by(just(Token::Ctrl(',')))
-                        .collect::<Vec<_>>()
-                        .delimited_by(just(Token::Ctrl('{')), just(Token::Ctrl('}'))),
+                        .collect::<Vec<_>>(),
                 )
                 .map(|(((((_, name), type_rep), implicits), explicits), vec)| {
                     StmtKind::Data(DataStmt {
@@ -1177,10 +1180,9 @@ fn main() {
     let mut state = TermState::default();
     let ast = state.parse([
         // Source code
-        "data Bool : Type {",
+        "data Bool : Type where",
         "  True : Bool",
         ", False : Bool",
-        "}",
         "",
         "fun and : (x: Bool) -> Bool -> Bool",
         "        | True, True   = True",
