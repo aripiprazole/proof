@@ -12,7 +12,7 @@ use chumsky::{
     extra::{self, Err},
     prelude::{Input, Rich},
     primitive::{any, end, just, one_of},
-    recovery::skip_then_retry_until,
+    recovery::{nested_delimiters, skip_then_retry_until, via_parser},
     recursive::recursive,
     select,
     span::SimpleSpan,
@@ -958,6 +958,21 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
         pi.or(ann)
             .or(abs)
             .or(let_expr)
+            .recover_with(via_parser(
+                nested_delimiters(
+                    Token::Ctrl('('),
+                    Token::Ctrl(')'),
+                    [
+                        (Token::Ctrl('['), Token::Ctrl(']')),
+                        (Token::Ctrl('{'), Token::Ctrl('}')),
+                    ],
+                    |span| Spanned {
+                        data: TermKind::Error,
+                        span,
+                    },
+                )
+                .map_with_state(|value, _, state: &mut TermState| state.terms.intern(value)),
+            ))
             .labelled("expression")
             .as_context()
     });
@@ -1083,7 +1098,14 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .map_with_state(|value, _, state: &mut TermState| state.stmts.intern(value))
         });
 
-        data_stmt.or(val_stmt).or(expr_stmt).labelled("statement")
+        data_stmt
+            .or(val_stmt)
+            .or(expr_stmt)
+            .labelled("statement")
+            .recover_with(skip_then_retry_until(
+                any().ignored(),
+                one_of([Token::Ctrl(';'), Token::Fun, Token::Data]).ignored(),
+            ))
     });
 
     stmt_parser
