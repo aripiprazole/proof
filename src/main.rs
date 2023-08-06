@@ -418,7 +418,7 @@ impl PartialEq for Hole {
             _ => {
                 let value = self.hole.borrow();
                 let other_value = other.hole.borrow();
-                (&*value).eq(&*other_value)
+                (*value).eq(&*other_value)
             }
         }
     }
@@ -803,6 +803,16 @@ pub fn lexer<'src>() -> impl Parser<'src, &'src str, Vec<Spanned<Token<'src>>>, 
 /// [`recursive`]: https://docs.rs/chumsky/0.1.0/chumsky/recursive/index.html
 /// [`Parser`]: https://docs.rs/chumsky/0.1.0/chumsky/prelude/trait.Parser.html
 /// [`Term`]: [`Term`]
+/// 
+/// NOTE: The parsers uses the [`recursive`] combinator, which is a
+/// combinator that allows for recursive parsers, even when it is
+/// not needed, because this wraps the types and makes compilation
+/// faster.
+/// 
+/// Chumsky uses session types to define the input and output of
+/// a parser. So if we combine so much parser as this function do
+/// we will get a very long type. To make it easier to read, and
+/// faster to compile/type check, we use the [`recursive`].
 pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
     // Input Types
     'tokens,
@@ -825,177 +835,205 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             .labelled("constructor identifier pattern");
 
         // A cons pattern is defined as a name followed by a list of patterns.
-        let cons = just(Token::Ctrl('('))
-            .then(select! { Token::Constructor(str) => str })
-            .then(pattern.clone().repeated().collect::<Vec<_>>())
-            .then_ignore(just(Token::Ctrl(')')))
-            .map(|((_, name), patterns)| PatternKind::Constructor(name.into(), patterns))
-            .map_with_span(spanned)
-            .map_with_state(|value, _, state: &mut TermState| state.patterns.intern(value))
-            .labelled("constructor pattern");
+        let cons = recursive(|_| {
+            just(Token::Ctrl('('))
+                .then(select! { Token::Constructor(str) => str })
+                .then(pattern.clone().repeated().collect::<Vec<_>>())
+                .then_ignore(just(Token::Ctrl(')')))
+                .map(|((_, name), patterns)| PatternKind::Constructor(name.into(), patterns))
+                .map_with_span(spanned)
+                .map_with_state(|value, _, state: &mut TermState| state.patterns.intern(value))
+                .labelled("constructor pattern")
+        });
 
-        id.or(cons).or(cons_id).labelled("pattern")
+        id.or(cons).or(cons_id).labelled("pattern").as_context()
     });
 
     let expr_parser = recursive(|expr| {
-        // Defines the parser for the value. It is the base of the
-        // expression parser.
-        let value = select! {
-            Token::Number(number) => TermKind::Number(number),
-            Token::Identifier(id) => TermKind::Hole(Hole::new(id.into())),
-            Token::Constructor(id) if id == "Type" => TermKind::Type(0),
-            Token::Constructor(id) => TermKind::Constructor(id.into()),
-            Token::String(str) => TermKind::String(str.into()),
-        }
-        .map_with_span(spanned)
-        .map_with_state(|value, _, state: &mut TermState| state.terms.intern(value))
-        .labelled("value");
-
-        let group = expr
-            .clone()
-            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
-            .labelled("group expression");
-
-        let primary = value.or(group).labelled("primary");
-
-        let app = primary.clone().foldl_with_state(
-            primary.clone().repeated(),
-            |acc, next, state: &mut TermState| {
-                let first = state.terms.span(acc);
-                let end = state.terms.span(next);
-
-                let span = (first.start..end.end).into();
-                let kind = TermKind::Apply(acc, next);
-
-                state.terms.intern(spanned(kind, span))
-            },
-        );
-
-        let abs = just(Token::Ctrl('\\'))
-            .then(pattern_parser.clone())
-            .then_ignore(just(Token::Identifier(".")))
-            .then(expr.clone())
-            .map(|((_, pattern), expr)| TermKind::Lambda(pattern, expr))
+        let primary = recursive(|_| {
+            // Defines the parser for the value. It is the base of the
+            // expression parser.
+            let value = select! {
+                Token::Number(number) => TermKind::Number(number),
+                Token::Identifier(id) if id != "->" => TermKind::Hole(Hole::new(id.into())),
+                Token::Constructor(id) if id == "Type" => TermKind::Type(0),
+                Token::Constructor(id) => TermKind::Constructor(id.into()),
+                Token::String(str) => TermKind::String(str.into()),
+            }
             .map_with_span(spanned)
             .map_with_state(|value, _, state: &mut TermState| state.terms.intern(value))
-            .labelled("lambda exprression");
+            .labelled("value");
 
-        let let_expr = just(Token::Let)
-            .then(pattern_parser.clone())
-            .then_ignore(just(Token::Identifier("=")))
-            .then(expr.clone())
-            .then_ignore(just(Token::In))
-            .then(expr.clone())
-            .map(|(((_, pattern), value), expr)| TermKind::Let(pattern, value, expr))
-            .map_with_span(spanned)
-            .map_with_state(|value, _, state: &mut TermState| state.terms.intern(value))
-            .labelled("let exprression");
+            let group = expr
+                .clone()
+                .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
+                .labelled("group expression");
 
-        app.or(abs).or(let_expr).labelled("expression")
+            value.or(group).labelled("primary")
+        });
+
+        let app = recursive(|_| {
+            primary.clone().foldl_with_state(
+                primary.clone().repeated(),
+                |acc, next, state: &mut TermState| {
+                    let first = state.terms.span(acc);
+                    let end = state.terms.span(next);
+
+                    let span = (first.start..end.end).into();
+                    let kind = TermKind::Apply(acc, next);
+
+                    state.terms.intern(spanned(kind, span))
+                },
+            )
+        });
+
+        let abs = recursive(|_| {
+            just(Token::Ctrl('\\'))
+                .then(pattern_parser.clone())
+                .then_ignore(just(Token::Identifier(".")))
+                .then(expr.clone())
+                .map(|((_, pattern), expr)| TermKind::Lambda(pattern, expr))
+                .map_with_span(spanned)
+                .map_with_state(|value, _, state: &mut TermState| state.terms.intern(value))
+                .labelled("lambda exprression")
+        });
+
+        let let_expr = recursive(|_| {
+            just(Token::Let)
+                .then(pattern_parser.clone())
+                .then_ignore(just(Token::Identifier("=")))
+                .then(expr.clone())
+                .then_ignore(just(Token::In))
+                .then(expr.clone())
+                .map(|(((_, pattern), value), expr)| TermKind::Let(pattern, value, expr))
+                .map_with_span(spanned)
+                .map_with_state(|value, _, state: &mut TermState| state.terms.intern(value))
+                .labelled("let exprression")
+        });
+
+        app.or(abs).or(let_expr).labelled("expression").as_context()
     });
 
-    let stmt_parser = {
-        let expr_stmt = expr_parser
-            .clone()
-            .map(StmtKind::Term)
-            .map_with_span(spanned)
-            .map_with_state(|value, _, state: &mut TermState| state.stmts.intern(value))
-            .labelled("expression statement");
+    let stmt_parser = recursive(|_| {
+        let expr_stmt = recursive(|_| {
+            expr_parser
+                .clone()
+                .map(StmtKind::Term)
+                .map_with_span(spanned)
+                .map_with_state(|value, _, state: &mut TermState| state.stmts.intern(value))
+                .labelled("expression statement")
+        });
 
-        let type_rep = just(Token::Ctrl(':'))
-            .then(expr_parser.clone())
-            .map(|(_, type_rep)| type_rep)
-            .or_not()
-            .map_with_state(|type_rep, _, state: &mut TermState| match type_rep {
-                Some(type_rep) => type_rep,
-                None => state.terms.intern(Spanned {
-                    data: TermKind::Hole(Hole::default()),
-                    span: (0..0).into(),
-                }),
-            });
-
-        let constructors = select! { Token::Constructor(str) => str }
-            .then(type_rep.clone())
-            .map(|(name, type_rep)| DataConstructor {
-                name: name.into(),
-                type_rep,
-            })
-            .labelled("data constructor");
-
-        let parameter = pattern_parser
-            .clone()
-            .then(type_rep.clone())
-            .map(|(pattern, type_rep)| Parameter { pattern, type_rep });
-
-        let implicit_parameters = parameter
-            .clone()
-            .separated_by(just(Token::Ctrl(',')))
-            .collect::<Vec<_>>()
-            .delimited_by(just(Token::Ctrl('[')), just(Token::Ctrl(']')))
-            .labelled("implicit parameters");
-
-        let explicit_parameters = parameter
-            .clone()
-            .separated_by(just(Token::Ctrl(',')))
-            .collect::<Vec<_>>()
-            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
-            .labelled("explicit parameters");
-
-        let data_stmt = just(Token::Data)
-            .then(select! { Token::Constructor(str) => str })
-            .then(type_rep.clone())
-            .then(implicit_parameters.or_not())
-            .then(explicit_parameters.or_not())
-            .then(
-                constructors
-                    .separated_by(just(Token::Ctrl(',')))
-                    .collect::<Vec<_>>()
-                    .delimited_by(just(Token::Ctrl('{')), just(Token::Ctrl('}'))),
-            )
-            .map(|(((((_, name), type_rep), implicits), explicits), vec)| {
-                StmtKind::Data(DataStmt {
-                    name: name.into(),
-                    parameters: Parameters {
-                        implicit_parameters: implicits.unwrap_or_default(),
-                        explicit_parameters: explicits.unwrap_or_default(),
-                    },
-                    type_rep,
-                    constructors: vec,
+        let type_rep = recursive(|_| {
+            just(Token::Ctrl(':'))
+                .then(expr_parser.clone())
+                .map(|(_, type_rep)| type_rep)
+                .or_not()
+                .map_with_state(|type_rep, _, state: &mut TermState| match type_rep {
+                    Some(type_rep) => type_rep,
+                    None => state.terms.intern(Spanned {
+                        data: TermKind::Hole(Hole::default()),
+                        span: (0..0).into(),
+                    }),
                 })
-            })
-            .map_with_span(spanned)
-            .map_with_state(|value, _, state: &mut TermState| state.stmts.intern(value))
-            .labelled("data statement");
+        });
 
-        let clause = just(Token::Ctrl('|'))
-            .then(
-                pattern_parser
-                    .clone()
-                    .separated_by(just(Token::Ctrl(',')))
-                    .collect::<Vec<_>>(),
-            )
-            .then_ignore(just(Token::Identifier("=")))
-            .then(expr_parser.clone())
-            .map(|((_, patterns), term)| Clause { patterns, term });
-
-        let val_stmt = just(Token::Val)
-            .then(select! { Token::Identifier(str) => str })
-            .then(type_rep.clone())
-            .then(clause.repeated().collect::<Vec<_>>().or_not())
-            .map(|(((_, name), type_rep), clauses)| {
-                let clauses: Vec<_> = clauses.unwrap_or_default();
-
-                StmtKind::Val(ValStmt {
+        let constructors = recursive(|_| {
+            select! { Token::Constructor(str) => str }
+                .then(type_rep.clone())
+                .map(|(name, type_rep)| DataConstructor {
                     name: name.into(),
                     type_rep,
-                    clauses,
                 })
-            })
-            .map_with_span(spanned)
-            .map_with_state(|value, _, state: &mut TermState| state.stmts.intern(value));
+                .labelled("data constructor")
+        });
+
+        let parameter = recursive(|_| {
+            pattern_parser
+                .clone()
+                .then(type_rep.clone())
+                .map(|(pattern, type_rep)| Parameter { pattern, type_rep })
+        });
+
+        let implicit_parameters = recursive(|_| {
+            parameter
+                .clone()
+                .separated_by(just(Token::Ctrl(',')))
+                .collect::<Vec<_>>()
+                .delimited_by(just(Token::Ctrl('[')), just(Token::Ctrl(']')))
+                .labelled("implicit parameters")
+        });
+
+        let explicit_parameters = recursive(|_| {
+            parameter
+                .clone()
+                .separated_by(just(Token::Ctrl(',')))
+                .collect::<Vec<_>>()
+                .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
+                .labelled("explicit parameters")
+        });
+
+        let data_stmt = recursive(|_| {
+            just(Token::Data)
+                .then(select! { Token::Constructor(str) => str })
+                .then(type_rep.clone())
+                .then(implicit_parameters.or_not())
+                .then(explicit_parameters.or_not())
+                .then(
+                    constructors
+                        .separated_by(just(Token::Ctrl(',')))
+                        .collect::<Vec<_>>()
+                        .delimited_by(just(Token::Ctrl('{')), just(Token::Ctrl('}'))),
+                )
+                .map(|(((((_, name), type_rep), implicits), explicits), vec)| {
+                    StmtKind::Data(DataStmt {
+                        name: name.into(),
+                        parameters: Parameters {
+                            implicit_parameters: implicits.unwrap_or_default(),
+                            explicit_parameters: explicits.unwrap_or_default(),
+                        },
+                        type_rep,
+                        constructors: vec,
+                    })
+                })
+                .map_with_span(spanned)
+                .map_with_state(|value, _, state: &mut TermState| state.stmts.intern(value))
+                .labelled("data statement")
+        });
+
+        let clause = recursive(|_| {
+            just(Token::Ctrl('|'))
+                .then(
+                    pattern_parser
+                        .clone()
+                        .separated_by(just(Token::Ctrl(',')))
+                        .collect::<Vec<_>>(),
+                )
+                .then_ignore(just(Token::Identifier("=")))
+                .then(expr_parser.clone())
+                .map(|((_, patterns), term)| Clause { patterns, term })
+        });
+
+        let val_stmt = recursive(|_| {
+            just(Token::Val)
+                .then(select! { Token::Identifier(str) => str })
+                .then(type_rep.clone())
+                .then(clause.repeated().collect::<Vec<_>>().or_not())
+                .map(|(((_, name), type_rep), clauses)| {
+                    let clauses: Vec<_> = clauses.unwrap_or_default();
+
+                    StmtKind::Val(ValStmt {
+                        name: name.into(),
+                        type_rep,
+                        clauses,
+                    })
+                })
+                .map_with_span(spanned)
+                .map_with_state(|value, _, state: &mut TermState| state.stmts.intern(value))
+        });
 
         data_stmt.or(val_stmt).or(expr_stmt).labelled("statement")
-    };
+    });
 
     stmt_parser
         .repeated()
@@ -1096,7 +1134,6 @@ impl TermState {
 
 fn main() {
     let mut state = TermState::default();
-
     let ast = state.parse([
         // Source code
         "data Bool : Type {",
