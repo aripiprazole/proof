@@ -803,12 +803,12 @@ pub fn lexer<'src>() -> impl Parser<'src, &'src str, Vec<Spanned<Token<'src>>>, 
 /// [`recursive`]: https://docs.rs/chumsky/0.1.0/chumsky/recursive/index.html
 /// [`Parser`]: https://docs.rs/chumsky/0.1.0/chumsky/prelude/trait.Parser.html
 /// [`Term`]: [`Term`]
-/// 
+///
 /// NOTE: The parsers uses the [`recursive`] combinator, which is a
 /// combinator that allows for recursive parsers, even when it is
 /// not needed, because this wraps the types and makes compilation
 /// faster.
-/// 
+///
 /// Chumsky uses session types to define the input and output of
 /// a parser. So if we combine so much parser as this function do
 /// we will get a very long type. To make it easier to read, and
@@ -887,6 +887,42 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             )
         });
 
+        let ann = recursive(|_| {
+            app.clone()
+                .foldl_with_state(
+                    just(Token::Ctrl(':')).then(expr.clone()).repeated(),
+                    |acc, (_, next), state: &mut TermState| {
+                        let first = state.terms.span(acc);
+                        let end = state.terms.span(next);
+
+                        let span = (first.start..end.end).into();
+                        let kind = TermKind::Ann(acc, next);
+
+                        state.terms.intern(spanned(kind, span))
+                    },
+                )
+                .labelled("annotation")
+        });
+
+        let pi = recursive(|_| {
+            app.clone()
+                .map_with_state(|type_rep, _, state: &mut TermState| {
+                    match state.terms.get(type_rep) {
+                        TermKind::Ann(name, type_rep) => match state.terms.get(name) {
+                            TermKind::Hole(hole) => (hole.name.unwrap_or("_".into()), type_rep),
+                            _ => ("_".into(), type_rep),
+                        },
+                        _ => ("_".into(), type_rep),
+                    }
+                })
+                .then(just(Token::Identifier("->")))
+                .then(expr.clone())
+                .map(|(((name, parameter), _), value)| TermKind::Pi(name, parameter, value))
+                .map_with_span(spanned)
+                .map_with_state(|value, _, state: &mut TermState| state.terms.intern(value))
+                .labelled("pi expression")
+        });
+
         let abs = recursive(|_| {
             just(Token::Ctrl('\\'))
                 .then(pattern_parser.clone())
@@ -909,9 +945,14 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .map_with_span(spanned)
                 .map_with_state(|value, _, state: &mut TermState| state.terms.intern(value))
                 .labelled("let exprression")
+                .as_context()
         });
 
-        app.or(abs).or(let_expr).labelled("expression").as_context()
+        pi.or(ann)
+            .or(abs)
+            .or(let_expr)
+            .labelled("expression")
+            .as_context()
     });
 
     let stmt_parser = recursive(|_| {
@@ -1012,6 +1053,8 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .then_ignore(just(Token::Identifier("=")))
                 .then(expr_parser.clone())
                 .map(|((_, patterns), term)| Clause { patterns, term })
+                .labelled("clause")
+                .as_context()
         });
 
         let val_stmt = recursive(|_| {
@@ -1141,9 +1184,10 @@ fn main() {
         ", False : Bool",
         "}",
         "",
-        "val not : Bool -> Bool",
-        "        | True = False",
-        "        | False = True",
+        "val and : (x: Bool) -> Bool -> Bool",
+        "        | True, True   = True",
+        "        | _   , False  = False",
+        "        | _   , _      = False",
     ]);
 
     println!("{:#?}", ast.debug(&state));
