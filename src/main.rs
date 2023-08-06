@@ -835,6 +835,9 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
         .map_with_state(|value, _, state: &mut TermState| state.patterns.intern(value))
         .labelled("identifier pattern");
 
+        // A cons pattern is defined as a name but not followed by a list of patterns.
+        //
+        // It does parses without parenthesis, because it is easier to parse.
         let cons_id = select! { Token::Constructor(str) => str }
             .map(|name: &str| PatternKind::Constructor(name.into(), vec![]))
             .map_with_span(spanned)
@@ -857,6 +860,8 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
     });
 
     let expr_parser = recursive(|expr| {
+        // Defines the parser for the value. It is the base of the
+        // expression parser.
         let primary = recursive(|_| {
             // Defines the parser for the value. It is the base of the
             // expression parser.
@@ -879,6 +884,8 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             value.or(group).labelled("primary")
         });
 
+        // Defines the parser for the application. It is the second
+        // level of the expression parser.
         let app = recursive(|_| {
             primary.clone().foldl_with_state(
                 primary.clone().repeated(),
@@ -894,6 +901,8 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             )
         });
 
+        // Defines an annotation parser. It does parse a type
+        // annotation, which is a value followed by a type.
         let ann = recursive(|_| {
             app.clone()
                 .foldl_with_state(
@@ -911,6 +920,8 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .labelled("annotation")
         });
 
+        // Defines a dependent function type parser. It does parse
+        // a function type, which is a type followed by a type.
         let pi = recursive(|_| {
             app.clone()
                 .map_with_state(|type_rep, _, state: &mut TermState| {
@@ -930,7 +941,9 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .labelled("pi expression")
         });
 
-        let abs = recursive(|_| {
+        // Defines a lambda parser. It does parse a lambda expression,
+        // which is a pattern followed by an expression.
+        let lambda = recursive(|_| {
             just(Token::Ctrl('\\'))
                 .then(pattern_parser.clone())
                 .then_ignore(just(Token::Identifier(".")))
@@ -941,6 +954,8 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .labelled("lambda exprression")
         });
 
+        // Defines a let parser. It does parse a let expression,
+        // which is a pattern followed by an expression.
         let let_expr = recursive(|_| {
             just(Token::Let)
                 .then(pattern_parser.clone())
@@ -955,8 +970,10 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .as_context()
         });
 
+        // Defines the expression parser. It is the top level of the
+        // expression parser.
         pi.or(ann)
-            .or(abs)
+            .or(lambda)
             .or(let_expr)
             .recover_with(via_parser(
                 nested_delimiters(
@@ -977,16 +994,25 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             .as_context()
     });
 
+    // Defines the statement parser. It is the top level of the
+    // statement parser.
     let stmt_parser = recursive(|_| {
+        // Defines a term parser. It does parse a term, which is an
+        // expression followed by a semicolon.
         let expr_stmt = recursive(|_| {
             expr_parser
                 .clone()
+                .then_ignore(just(Token::Ctrl(';')))
                 .map(StmtKind::Term)
                 .map_with_span(spanned)
                 .map_with_state(|value, _, state: &mut TermState| state.stmts.intern(value))
                 .labelled("expression statement")
         });
 
+        // Defines a maybe infer type representation parser. It does
+        // parse a type representation, which is a colon followed by
+        // a type representation. If there is no type representation,
+        // it will parse a hole.
         let type_rep = recursive(|_| {
             just(Token::Ctrl(':'))
                 .then(expr_parser.clone())
@@ -1036,6 +1062,10 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .labelled("explicit parameters")
         });
 
+        // Defines a data parser. It does parse a data statement,
+        // which is a data keyword followed by a name, a type
+        // representation, a where keyword, and a list of data
+        // constructors.
         let data_stmt = recursive(|_| {
             just(Token::Data)
                 .then(select! { Token::Constructor(str) => str })
@@ -1079,7 +1109,10 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .as_context()
         });
 
-        let val_stmt = recursive(|_| {
+        // Defines a fun parser. It does parse a fun statement, which
+        // is a fun keyword followed by a name, a type representation,
+        // a list of clauses, and a semicolon.
+        let fun_stmt = recursive(|_| {
             just(Token::Fun)
                 .then(select! { Token::Identifier(str) => str })
                 .then(type_rep.clone())
@@ -1099,7 +1132,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
         });
 
         data_stmt
-            .or(val_stmt)
+            .or(fun_stmt)
             .or(expr_stmt)
             .labelled("statement")
             .recover_with(skip_then_retry_until(
@@ -1108,6 +1141,9 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             ))
     });
 
+    // Defines a proof parser. It does parse a proof statement, which
+    // is a proof keyword followed by a name, a type representation,
+    // a list of clauses, and a semicolon.
     stmt_parser
         .repeated()
         .collect()
@@ -1220,7 +1256,7 @@ fn main() {
         "        | _,    _      = False",
         "        ;",
         "",
-        "and True False",
+        "and True False;",
     ]);
 
     println!("{:#?}", ast.debug(&state));
