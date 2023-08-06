@@ -52,11 +52,120 @@ impl<'src> Display for Token<'src> {
     }
 }
 
+#[derive(Debug, Hash, PartialEq, Eq, Clone)]
+pub struct Parameter {
+    pub pattern: Pattern,
+    pub type_rep: Option<Term>,
+}
+
+impl Parameter {
+    /// Creates a new debug wrapper.
+    pub fn debug<'state>(&self, state: &'state TermState) -> ParameterDebug<'state> {
+        ParameterDebug {
+            state,
+            parameter: self.clone(),
+        }
+    }
+}
+
+pub struct ParameterDebug<'state> {
+    pub state: &'state TermState,
+    pub parameter: Parameter,
+}
+
+impl Debug for ParameterDebug<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Parameter")
+            .field("pattern", &self.parameter.pattern.debug(self.state))
+            .field(
+                "type_rep",
+                &self.parameter.type_rep.map(|value| value.debug(self.state)),
+            )
+            .finish()
+    }
+}
+
 /// Parameters are a list of implicit parameters.
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub struct Parameters {
-    pub implicit_parameters: Vec<(Pattern, Option<Term>)>,
-    pub explicit_parameters: Vec<(Pattern, Option<Term>)>,
+    pub implicit_parameters: Vec<Parameter>,
+    pub explicit_parameters: Vec<Parameter>,
+}
+
+impl Parameters {
+    /// Creates a new debug wrapper.
+    pub fn debug<'state>(&self, state: &'state TermState) -> ParametersDebug<'state> {
+        ParametersDebug {
+            state,
+            parameters: self.clone(),
+        }
+    }
+}
+
+pub struct ParametersDebug<'state> {
+    pub state: &'state TermState,
+    pub parameters: Parameters,
+}
+
+impl Debug for ParametersDebug<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Parameters")
+            .field(
+                "implicit_parameters",
+                &self
+                    .parameters
+                    .implicit_parameters
+                    .iter()
+                    .map(|value| value.debug(self.state))
+                    .collect::<Vec<_>>(),
+            )
+            .field(
+                "explicit_parameters",
+                &self
+                    .parameters
+                    .explicit_parameters
+                    .iter()
+                    .map(|value| value.debug(self.state))
+                    .collect::<Vec<_>>(),
+            )
+            .finish()
+    }
+}
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone)]
+pub struct DataConstructor {
+    pub name: Constructor,
+    pub type_rep: Option<Term>,
+}
+
+impl DataConstructor {
+    /// Creates a new debug wrapper.
+    pub fn debug<'state>(&self, state: &'state TermState) -> DataConstructorDebug<'state> {
+        DataConstructorDebug {
+            state,
+            constructor: self.clone(),
+        }
+    }
+}
+
+pub struct DataConstructorDebug<'state> {
+    pub state: &'state TermState,
+    pub constructor: DataConstructor,
+}
+
+impl Debug for DataConstructorDebug<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DataConstructor")
+            .field("name", &self.constructor.name)
+            .field(
+                "type_rep",
+                &self
+                    .constructor
+                    .type_rep
+                    .map(|value| value.debug(self.state)),
+            )
+            .finish()
+    }
 }
 
 /// A data statement is used to declare a new algebraic
@@ -66,7 +175,45 @@ pub struct DataStmt {
     pub name: Constructor,
     pub parameters: Parameters,
     pub type_rep: Option<Term>,
-    pub constructors: Vec<(Constructor, Option<Term>)>,
+    pub constructors: Vec<DataConstructor>,
+}
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone)]
+pub struct Clause {
+    pub patterns: Vec<Pattern>,
+    pub term: Term,
+}
+
+impl Clause {
+    /// Creates a new debug wrapper.
+    pub fn debug<'state>(&self, state: &'state TermState) -> ClauseDebug<'state> {
+        ClauseDebug {
+            state,
+            clause: self.clone(),
+        }
+    }
+}
+
+pub struct ClauseDebug<'state> {
+    pub state: &'state TermState,
+    pub clause: Clause,
+}
+
+impl Debug for ClauseDebug<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Clause")
+            .field(
+                "patterns",
+                &self
+                    .clause
+                    .patterns
+                    .iter()
+                    .map(|value| value.debug(self.state))
+                    .collect::<Vec<_>>(),
+            )
+            .field("term", &self.clause.term.debug(self.state))
+            .finish()
+    }
 }
 
 /// A val statement is used to declare a new value.
@@ -74,7 +221,7 @@ pub struct DataStmt {
 pub struct ValStmt {
     pub name: Constructor,
     pub type_rep: Option<Term>,
-    pub clauses: Vec<(Vec<Pattern>, Term)>,
+    pub clauses: Vec<Clause>,
 }
 
 /// A proof file is a list of statements.
@@ -91,7 +238,10 @@ pub struct ProofFileDebug<'state> {
 impl ProofFile {
     /// Creates a new debug wrapper.
     pub fn debug<'state>(&self, state: &'state TermState) -> ProofFileDebug<'state> {
-        ProofFileDebug { state, file: self.clone() }
+        ProofFileDebug {
+            state,
+            file: self.clone(),
+        }
     }
 }
 
@@ -147,13 +297,26 @@ impl Debug for StmtDebug<'_> {
             StmtKind::Data(data_stmt) => f
                 .debug_struct("DataStmt")
                 .field("name", &data_stmt.name)
-                .field("type_rep", &data_stmt.type_rep)
-                .field("constructors", &data_stmt.constructors)
+                .field(
+                    "type_rep",
+                    &data_stmt.type_rep.map(|value| value.debug(self.state)),
+                )
+                .field(
+                    "constructors",
+                    &data_stmt
+                        .constructors
+                        .into_iter()
+                        .map(|constructor| constructor.debug(self.state))
+                        .collect::<Vec<_>>(),
+                )
                 .finish(),
             StmtKind::Val(val_stmt) => f
                 .debug_struct("ValStmt")
                 .field("name", &val_stmt.name)
-                .field("type_rep", &val_stmt.type_rep)
+                .field(
+                    "type_rep",
+                    &val_stmt.type_rep.map(|value| value.debug(self.state)),
+                )
                 .field("clauses", &val_stmt.clauses)
                 .finish(),
             StmtKind::Term(_) => todo!(),
@@ -323,6 +486,65 @@ impl HasData for Spanned<TermKind> {
 
     fn span(&self) -> Span {
         self.span
+    }
+}
+
+impl Term {
+    /// Creates a new debug wrapper.
+    pub fn debug<'state>(&self, state: &'state TermState) -> TermDebug<'state> {
+        TermDebug { state, term: *self }
+    }
+}
+
+/// A wrapper for the `Term` type that implements the `Debug` trait.
+/// This wrapper is used to display the `Term` type in a more
+/// readable format.
+pub struct TermDebug<'state> {
+    pub state: &'state TermState,
+    pub term: Term,
+}
+
+impl Debug for TermDebug<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.state.terms.get(self.term) {
+            TermKind::Error => write!(f, "Error"),
+            TermKind::Type(level) => write!(f, "Type({})", level),
+            TermKind::Num(num) => write!(f, "Num({})", num),
+            TermKind::Str(str) => write!(f, "Str({})", str),
+            TermKind::Con(con) => write!(f, "Con({})", con),
+            TermKind::Var(var) => write!(f, "Var({})", var.name),
+            TermKind::Ann(value, against) => write!(
+                f,
+                "Ann({:?}, {:?})",
+                value.debug(self.state),
+                against.debug(self.state)
+            ),
+            TermKind::Abs(parameter, value) => write!(
+                f,
+                "Abs({:?}, {:?})",
+                parameter.debug(self.state),
+                value.debug(self.state)
+            ),
+            TermKind::App(callee, argument) => write!(
+                f,
+                "App({:?}, {:?})",
+                callee.debug(self.state),
+                argument.debug(self.state)
+            ),
+            TermKind::Let(pattern, value, expr) => write!(
+                f,
+                "Let({:?}, {:?}, {:?})",
+                pattern.debug(self.state),
+                value.debug(self.state),
+                expr.debug(self.state)
+            ),
+            TermKind::Pi(name, domain, codomain) => write!(
+                f,
+                "Pi({name:?}, {:?}, {:?})",
+                domain.debug(self.state),
+                codomain.debug(self.state)
+            ),
+        }
     }
 }
 
@@ -677,10 +899,16 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
 
         let constructors = select! { Token::Con(str) => str }
             .then(type_rep.clone().or_not())
-            .map(|(name, type_rep)| (name.to_string(), type_rep))
+            .map(|(name, type_rep)| DataConstructor {
+                name: name.into(),
+                type_rep,
+            })
             .labelled("data constructor");
 
-        let parameter = pattern_parser.clone().then(type_rep.clone().or_not());
+        let parameter = pattern_parser
+            .clone()
+            .then(type_rep.clone().or_not())
+            .map(|(pattern, type_rep)| Parameter { pattern, type_rep });
 
         let implicit_parameters = parameter
             .clone()
@@ -731,7 +959,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             )
             .then_ignore(just(Token::Id("=")))
             .then(expr_parser.clone())
-            .map(|((_, pattern), expr)| (pattern, expr));
+            .map(|((_, patterns), term)| Clause { patterns, term });
 
         let val_stmt = just(Token::Val)
             .then(select! { Token::Con(str) => str })
