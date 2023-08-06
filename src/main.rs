@@ -1,9 +1,10 @@
-use std::{cell::RefCell, hash::Hash, marker::PhantomData, rc::Rc};
+use std::{cell::RefCell, fmt::Display, hash::Hash, marker::PhantomData, rc::Rc};
 
+use ariadne::{Color, Label, Report, ReportKind, Source};
 use chumsky::{
     error::Error,
     extra::{self, Err},
-    prelude::Rich,
+    prelude::{Input, Rich},
     primitive::{any, just, one_of},
     recursive::recursive,
     select,
@@ -13,6 +14,7 @@ use chumsky::{
     IterParser, Parser,
 };
 use fxhash::FxHashMap;
+use interner::global::GlobalPool;
 
 /// The token type used by the lexer.
 #[derive(Debug, PartialEq, Clone)]
@@ -23,9 +25,25 @@ pub enum Token<'src> {
     Val,
     Id(&'src str),
     Str(&'src str),
-    Cons(&'src str),
+    Con(&'src str),
     Num(isize),
     Ctrl(char),
+}
+
+impl<'src> Display for Token<'src> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Token::Let => write!(f, "let"),
+            Token::Data => write!(f, "data"),
+            Token::In => write!(f, "in"),
+            Token::Val => write!(f, "val"),
+            Token::Id(id) => write!(f, "{id}"),
+            Token::Str(str) => write!(f, "\"{str}\""),
+            Token::Con(cons) => write!(f, "{cons}"),
+            Token::Num(num) => write!(f, "{num}"),
+            Token::Ctrl(ctrl) => write!(f, "{ctrl}"),
+        }
+    }
 }
 
 /// Parameters are a list of implicit parameters.
@@ -54,7 +72,7 @@ pub struct ValStmt {
 }
 
 /// A proof file is a list of statements.
-#[derive(Debug, Hash, PartialEq, Eq, Clone)]
+#[derive(Default, Debug, Hash, PartialEq, Eq, Clone)]
 pub struct ProofFile {
     pub statements: Vec<Stmt>,
 }
@@ -153,6 +171,10 @@ pub enum TermKind {
     /// The string literal expression is used to represent a string
     /// literal.
     Str(String),
+
+    /// The string literal expression is used to represent a
+    /// constructor name.
+    Con(String),
 
     /// The variable expression is used to represent a variable
     Var(Var),
@@ -273,19 +295,39 @@ where
     pub phantom: PhantomData<K>,
 }
 
+impl<K, V> Default for Interner<K, V>
+where
+    K: From<usize> + Into<usize>,
+{
+    fn default() -> Self {
+        Self {
+            id_to_value: Default::default(),
+            value_to_id: Default::default(),
+            phantom: Default::default(),
+        }
+    }
+}
+
 impl<K, V: Hash + PartialEq + Eq + Clone> Interner<K, V>
 where
     K: From<usize> + Into<usize>,
 {
     pub fn intern(&self, value: V) -> K {
-        if let Some(id) = self.value_to_id.borrow().get(&value) {
-            K::from(*id)
-        } else {
-            let id = fxhash::hash(&value);
-            self.id_to_value.borrow_mut().insert(id, value.clone());
-            self.value_to_id.borrow_mut().insert(value, id);
-            K::from(id)
+        match self.get_id(&value) {
+            Some(id) => id,
+            None => {
+                let id = fxhash::hash(&value);
+                self.id_to_value.borrow_mut().insert(id, value.clone());
+                self.value_to_id.borrow_mut().insert(value, id);
+                K::from(id)
+            }
         }
+    }
+
+    pub fn get_id(&self, value: &V) -> Option<K> {
+        let value_to_id = self.value_to_id.borrow();
+        let id = value_to_id.get(value)?;
+        Some(K::from(*id))
     }
 }
 
@@ -320,6 +362,17 @@ pub struct TermState {
     pub stmts: Interner<Stmt, Spanned<StmtKind>>,
 }
 
+impl Default for TermState {
+    fn default() -> Self {
+        Self {
+            names: GlobalPool::new(),
+            patterns: Default::default(),
+            terms: Default::default(),
+            stmts: Default::default(),
+        }
+    }
+}
+
 /// Parse a string into a set of tokens.
 ///
 /// This function is a wrapper around the lexer and parser, and is the main entry point
@@ -343,7 +396,7 @@ pub fn lexer<'src>() -> impl Parser<'src, &'src str, Vec<Spanned<Token<'src>>>, 
     let op = one_of("+*-/!^|&<>=")
         .repeated()
         .at_least(1)
-        .map_slice(Token::Cons)
+        .map_slice(Token::Con)
         .labelled("operator");
 
     // An identifier is defined as an ASCII alphabetic character or an underscore followed by any number of alphanumeric
@@ -370,7 +423,7 @@ pub fn lexer<'src>() -> impl Parser<'src, &'src str, Vec<Spanned<Token<'src>>>, 
                 .repeated(),
         )
         .slice()
-        .map(Token::Cons);
+        .map(Token::Con);
 
     // An identifier is defined as an ASCII alphabetic character or an underscore followed by any number of alphanumeric
     // characters or underscores. The regex pattern for it is `[a-zA-Z_'.][a-zA-Z0-9_'.]*`.
@@ -433,18 +486,19 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
         }
         .map_with_span(spanned)
         .map_with_state(|value, _, state: &mut TermState| state.patterns.intern(value))
-        .labelled("id pattern");
+        .labelled("identifier pattern");
 
         // A cons pattern is defined as a name followed by a list of patterns.
         let cons = just(Token::Ctrl('('))
-            .then(select! { Token::Cons(str) => str })
+            .then(select! { Token::Con(str) => str })
             .then(pattern.clone().repeated().collect())
             .then_ignore(just(Token::Ctrl(')')))
             .map(|((_, name), patterns): (_, Vec<_>)| PatternKind::Cons(name.into(), patterns))
             .map_with_span(spanned)
-            .map_with_state(|value, _, state: &mut TermState| state.patterns.intern(value));
+            .map_with_state(|value, _, state: &mut TermState| state.patterns.intern(value))
+            .labelled("constructor pattern");
 
-        id.or(cons)
+        id.or(cons).labelled("pattern")
     });
 
     let expr_parser = recursive(|expr| {
@@ -452,6 +506,8 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
         // expression parser.
         let value = select! {
             Token::Num(number) => TermKind::Num(number),
+            Token::Id(id) => TermKind::Var(Var::new(id.into())),
+            Token::Con(id) => TermKind::Con(id.into()),
             Token::Str(str) => TermKind::Str(str.into()),
         }
         .map_with_span(spanned)
@@ -460,7 +516,8 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
 
         let group = expr
             .clone()
-            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')));
+            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
+            .labelled("group expression");
 
         let primary = value.or(group).labelled("primary");
 
@@ -483,7 +540,8 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             .then(expr.clone())
             .map(|((_, pattern), expr)| TermKind::Abs(pattern, expr))
             .map_with_span(spanned)
-            .map_with_state(|value, _, state: &mut TermState| state.terms.intern(value));
+            .map_with_state(|value, _, state: &mut TermState| state.terms.intern(value))
+            .labelled("lambda exprression");
 
         let let_expr = just(Token::Let)
             .then(pattern_parser.clone())
@@ -493,7 +551,8 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             .then(expr.clone())
             .map(|(((_, pattern), value), expr)| TermKind::Let(pattern, value, expr))
             .map_with_span(spanned)
-            .map_with_state(|value, _, state: &mut TermState| state.terms.intern(value));
+            .map_with_state(|value, _, state: &mut TermState| state.terms.intern(value))
+            .labelled("let exprression");
 
         app.or(abs).or(let_expr).labelled("expression")
     });
@@ -511,11 +570,11 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             .map(|(_, type_rep)| type_rep);
 
         let constructors = just(Token::Data)
-            .then(select! { Token::Cons(str) => str })
+            .then(select! { Token::Con(str) => str })
             .then_ignore(just(Token::Ctrl(':')))
             .then(expr_parser.clone())
             .map(|((_, name), type_rep)| (name.to_string(), type_rep))
-            .labelled("constructor");
+            .labelled("data constructor");
 
         let parameter = pattern_parser.clone().then(type_rep.clone().or_not());
 
@@ -523,16 +582,18 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             .clone()
             .separated_by(just(Token::Ctrl(',')))
             .collect::<Vec<_>>()
-            .delimited_by(just(Token::Ctrl('[')), just(Token::Ctrl(']')));
+            .delimited_by(just(Token::Ctrl('[')), just(Token::Ctrl(']')))
+            .labelled("implicit parameters");
 
         let explicit_parameters = parameter
             .clone()
             .separated_by(just(Token::Ctrl(',')))
             .collect::<Vec<_>>()
-            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')));
+            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
+            .labelled("explicit parameters");
 
         let data_stmt = just(Token::Data)
-            .then(select! { Token::Cons(str) => str })
+            .then(select! { Token::Con(str) => str })
             .then(type_rep.clone().or_not())
             .then(implicit_parameters.or_not())
             .then(explicit_parameters.or_not())
@@ -554,7 +615,8 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 })
             })
             .map_with_span(spanned)
-            .map_with_state(|value, _, state: &mut TermState| state.stmts.intern(value));
+            .map_with_state(|value, _, state: &mut TermState| state.stmts.intern(value))
+            .labelled("data statement");
 
         let clause = just(Token::Ctrl('|'))
             .then(
@@ -568,7 +630,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             .map(|((_, pattern), expr)| (pattern, expr));
 
         let val_stmt = just(Token::Val)
-            .then(select! { Token::Cons(str) => str })
+            .then(select! { Token::Con(str) => str })
             .then(type_rep.clone().or_not())
             .then(clause.repeated().collect::<Vec<_>>().or_not())
             .try_map(|(((_, name), type_rep), clauses): (_, _), span| {
@@ -603,6 +665,104 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
         .map(|statements| ProofFile { statements })
 }
 
+/// Parses a string into an [`ProofFile`].
+///
+/// [`ProofFile`]: [`ProofFile`]
+pub fn parse(source: &str, state: &mut TermState) -> ProofFile {
+    let filename = "terminal";
+
+    let (tokens, lex_errors) = lexer().parse(source).into_output_errors();
+    let tokens = tokens.unwrap_or_default();
+    let tokens = tokens
+        .into_iter()
+        .map(|span| (span.data, span.span))
+        .collect::<Vec<_>>();
+    let tokens = tokens
+        .as_slice()
+        .spanned((source.len()..source.len()).into());
+    let (proof_file, errors) = parser()
+        .parse_with_state(tokens, state)
+        .into_output_errors();
+
+    // If there are no errors, return the parsed expression.
+    if !errors.is_empty() || !lex_errors.is_empty() {
+        // Combine the errors from the lexer and the parser.
+        //
+        // The lexer errors are converted to strings, and the
+        // parser errors are converted to strings and the tokens
+        // are converted to strings.
+
+        report_ariadne_errors(
+            filename,
+            source,
+            errors
+                .into_iter()
+                .map(|error| error.map_token(|c| c.to_string()))
+                .chain(
+                    lex_errors
+                        .into_iter()
+                        .map(|error| error.map_token(|token| token.to_string())),
+                )
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    // If the expression is not present, we return an error sentinel
+    // value to avoid crashing.
+    proof_file.unwrap_or_else(|| ProofFile { statements: vec![] })
+}
+
+/// Reports the errors from the [`parse`] function.
+///
+/// [`parse`]: [`parse`]
+pub fn report_ariadne_errors(filename: &str, source: &str, errors: Vec<Rich<'_, String>>) {
+    type AriadneSpan = (String, std::ops::Range<usize>);
+
+    // Defines the filename of the source. And it is used to
+    // create the report.
+    let filename: String = filename.into();
+
+    for error in errors {
+        Report::<AriadneSpan>::build(ReportKind::Error, filename.clone(), 0)
+            .with_code(1)
+            .with_message(error.to_string())
+            .with_label(
+                Label::new((filename.clone(), error.span().into_range()))
+                    .with_message(error.reason().to_string())
+                    .with_color(Color::Red),
+            )
+            .with_labels(error.contexts().map(|(label, span)| {
+                Label::new((filename.clone(), span.into_range()))
+                    .with_message(format!("while parsing this {}", label))
+                    .with_color(Color::Yellow)
+            }))
+            .finish()
+            .eprint((filename.to_string(), Source::from(source.to_string())))
+            .unwrap();
+    }
+}
+
+impl TermState {
+    /// Parses a file into an [`ProofFile`].
+    pub fn parse<const N: usize>(&mut self, lines: [&str; N]) -> ProofFile {
+        let mut src = String::new();
+
+        for line in lines {
+            src.push_str(line);
+            src.push('\n');
+        }
+
+        parse(&src, self)
+    }
+}
+
 fn main() {
-    println!("Hello, world!");
+    let mut state = TermState::default();
+
+    let ast = state.parse([
+        // Source code
+        "val Not : Bool -> Bool",
+    ]);
+
+    println!("{ast:?}");
 }
