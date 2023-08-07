@@ -206,7 +206,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             // expression parser.
             let value = select! {
                 Token::Number(number) => ExprKind::Number(number),
-                Token::Identifier(id) if id != "->" => ExprKind::Hole(Hole::new(id.into())),
+                Token::Identifier(id) if id != "->" => ExprKind::Hole(id.into()),
                 Token::Constructor(id) if id == "Type" => ExprKind::Type(0),
                 Token::Constructor(id) => ExprKind::Constructor(id.into()),
                 Token::String(str) => ExprKind::String(str.into()),
@@ -263,7 +263,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             app.clone()
                 .map(|type_rep| match type_rep.data {
                     ExprKind::Ann(name, type_rep) => match name.data {
-                        ExprKind::Hole(hole) => (hole.name.unwrap_or("_".into()), type_rep),
+                        ExprKind::Hole(hole) => (hole, type_rep),
                         _ => ("_".into(), type_rep),
                     },
                     _ => ("_".into(), type_rep.into()),
@@ -353,7 +353,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .map(|type_rep| match type_rep {
                     Some(type_rep) => type_rep,
                     None => Spanned {
-                        data: ExprKind::Hole(Hole::default()),
+                        data: ExprKind::Hole("_".into()),
                         span: (0..0).into(),
                     },
                 })

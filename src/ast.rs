@@ -1,4 +1,4 @@
-use std::{fmt::Debug, cell::RefCell, rc::Rc, hash::Hash};
+use std::{fmt::Debug, hash::Hash};
 
 use chumsky::span::SimpleSpan;
 
@@ -52,7 +52,7 @@ pub struct ProofFile {
 }
 
 /// A statement is a top-level declaration in the language.
-#[derive(Default, Debug, Hash, PartialEq, Eq, Clone)]
+#[derive(Default, Hash, PartialEq, Eq, Clone)]
 pub enum StmtKind {
     #[default]
     Error,
@@ -61,12 +61,23 @@ pub enum StmtKind {
     Term(Expr),
 }
 
+impl Debug for StmtKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Error => write!(f, "Error"),
+            Self::Data(arg0) => arg0.fmt(f),
+            Self::Fun(arg0) => arg0.fmt(f),
+            Self::Term(arg0) => arg0.fmt(f),
+        }
+    }
+}
+
 /// A pattern is used to represent a value that is being matched
 /// against.
 ///
 /// The pattern can be a variable or a constructor applied to a list
 /// of patterns.
-#[derive(Default, Debug, Hash, PartialEq, Eq, Clone)]
+#[derive(Default, Hash, PartialEq, Eq, Clone)]
 pub enum PatternKind {
     #[default]
     Error,
@@ -74,53 +85,23 @@ pub enum PatternKind {
     Constructor(Constructor, Vec<Pattern>),
 }
 
-/// A variable is a name paired with a hole. The hole is used to
-/// represent the value of the variable.
-#[derive(Default, Eq, Clone)]
-pub struct Hole {
-    /// The name of the variable.
-    pub name: Option<Identifier>,
-    pub hole: Rc<RefCell<Option<Expr>>>,
-}
-
-impl Hole {
-    /// Creates a new hole without a value filled.
-    pub fn new(name: Identifier) -> Self {
-        Self {
-            name: Some(name),
-            hole: Rc::new(RefCell::new(None)),
-        }
-    }
-}
-
-impl Debug for Hole {
+impl Debug for PatternKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "?{}", self.name.clone().unwrap_or("_".into()))
-    }
-}
-
-impl Hash for Hole {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.name.hash(state);
-    }
-}
-
-impl PartialEq for Hole {
-    fn eq(&self, other: &Self) -> bool {
-        match (&self.name, &other.name) {
-            (Some(name), Some(other_name)) => name == other_name,
-            _ => {
-                let value = self.hole.borrow();
-                let other_value = other.hole.borrow();
-                (*value).eq(&*other_value)
-            }
+        match self {
+            Self::Error => write!(f, "Error"),
+            Self::Variable(arg0) => arg0.fmt(f),
+            Self::Constructor(constructor, patterns) => f
+                .debug_struct("Constructor")
+                .field("constructor", constructor)
+                .field("patterns", patterns)
+                .finish(),
         }
     }
 }
 
 /// The expressions are the primary AST nodes of the programming
 /// language. They represent dependent types, terms, and proofs.
-#[derive(Default, Debug, Hash, PartialEq, Eq, Clone)]
+#[derive(Default, Hash, PartialEq, Eq, Clone)]
 pub enum ExprKind {
     /// The error expression is used to represent an error.
     #[default]
@@ -142,7 +123,7 @@ pub enum ExprKind {
     Constructor(String),
 
     /// The variable expression is used to represent a variable
-    Hole(Hole),
+    Hole(String),
 
     /// The annotation expression is used to represent an annotated
     /// expression with a type.
@@ -172,6 +153,42 @@ pub enum ExprKind {
     Pi(Identifier, Expr, Expr),
 }
 
+impl Debug for ExprKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Error => write!(f, "Error"),
+            Self::Type(arg0) => arg0.fmt(f),
+            Self::Number(arg0) => arg0.fmt(f),
+            Self::String(arg0) => arg0.fmt(f),
+            Self::Constructor(arg0) => arg0.fmt(f),
+            Self::Hole(arg0) => arg0.fmt(f),
+            Self::Ann(value, against) => write!(f, "Ann({:?}, {:?})", value, against),
+            Self::Lambda(parameter, value) => f
+                .debug_struct("Lambda")
+                .field("parameter", &parameter)
+                .field("value", &value)
+                .finish(),
+            Self::Apply(callee, argument) => f
+                .debug_struct("Apply")
+                .field("callee", &callee)
+                .field("argument", argument)
+                .finish(),
+            Self::Let(name, value, expr) => f
+                .debug_struct("Let")
+                .field("name", name)
+                .field("value", value)
+                .field("expr", expr)
+                .finish(),
+            Self::Pi(arg0, domain, codomain) => f
+                .debug_struct("Pi")
+                .field("name", &arg0)
+                .field("domain", domain)
+                .field("codomain", codomain)
+                .finish(),
+        }
+    }
+}
+
 /// Create a spanned value.
 pub fn spanned<T>(value: T, span: SimpleSpan) -> Spanned<T> {
     Spanned { data: value, span }
@@ -199,8 +216,14 @@ pub type Stmt = Box<Spanned<StmtKind>>;
 
 /// A spanned value is a value paired with a span. The span is used
 /// to represent the location of the value in the source code.
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(PartialEq, Eq, Clone)]
 pub struct Spanned<T> {
     pub data: T,
     pub span: SimpleSpan,
+}
+
+impl<T: Debug> Debug for Spanned<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.data.fmt(f)
+    }
 }
