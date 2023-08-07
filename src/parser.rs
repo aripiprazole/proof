@@ -186,11 +186,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .then(select! { Token::Constructor(str) => str })
                 .then(pattern.clone().repeated().collect::<Vec<_>>())
                 .then_ignore(just(Token::Ctrl(')')))
-                .map(|((_, name), patterns)| {
-                    let patterns = patterns.into_iter().map(Box::new).collect();
-
-                    PatternKind::Constructor(name.into(), patterns)
-                })
+                .map(|((_, name), patterns)| PatternKind::Constructor(name.into(), patterns))
                 .map_with_span(spanned)
                 .labelled("constructor pattern")
         });
@@ -270,9 +266,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 })
                 .then(just(Token::Identifier("->")))
                 .then(expr.clone())
-                .map(|(((name, parameter), _), value)| {
-                    ExprKind::Pi(name, parameter, value.into())
-                })
+                .map(|(((name, parameter), _), value)| ExprKind::Pi(name, parameter, value.into()))
                 .map_with_span(spanned)
                 .labelled("pi expression")
         });
@@ -284,7 +278,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .then(pattern_parser.clone())
                 .then_ignore(just(Token::Identifier(".")))
                 .then(expr.clone())
-                .map(|((_, pattern), expr)| ExprKind::Lambda(pattern.into(), expr.into()))
+                .map(|((_, pattern), expr)| ExprKind::Lambda(pattern, expr.into()))
                 .map_with_span(spanned)
                 .labelled("lambda exprression")
         });
@@ -299,7 +293,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .then_ignore(just(Token::In))
                 .then(expr.clone())
                 .map(|(((_, pattern), value), expr)| {
-                    ExprKind::Let(pattern.into(), value.into(), expr.into())
+                    ExprKind::Let(pattern, value.into(), expr.into())
                 })
                 .map_with_span(spanned)
                 .labelled("let exprression")
@@ -336,7 +330,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             expr_parser
                 .clone()
                 .then_ignore(just(Token::Ctrl(';')))
-                .map(|term| StmtKind::Term(term.into()))
+                .map(StmtKind::Term)
                 .map_with_span(spanned)
                 .labelled("expression statement")
         });
@@ -364,7 +358,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .then(type_rep.clone())
                 .map(|(name, type_rep)| DataConstructor {
                     name: name.into(),
-                    type_rep: type_rep.into(),
+                    type_rep,
                 })
                 .labelled("data constructor")
         });
@@ -374,8 +368,8 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .clone()
                 .then(type_rep.clone())
                 .map(|(pattern, type_rep)| Parameter {
-                    pattern: pattern.into(),
-                    type_rep: type_rep.into(),
+                    pattern,
+                    type_rep,
                 })
         });
 
@@ -420,7 +414,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                             implicit_parameters: implicits.unwrap_or_default(),
                             explicit_parameters: explicits.unwrap_or_default(),
                         },
-                        type_rep: type_rep.into(),
+                        type_rep,
                         constructors: vec,
                     })
                 })
@@ -439,8 +433,8 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .then_ignore(just(Token::Identifier("=")))
                 .then(expr_parser.clone())
                 .map(|((_, patterns), term)| Clause {
-                    patterns: patterns.into_iter().map(Box::new).collect(),
-                    term: term.into(),
+                    patterns,
+                    term,
                 })
                 .labelled("clause")
                 .as_context()
@@ -460,7 +454,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
 
                     StmtKind::Fun(FunStmt {
                         name: name.into(),
-                        type_rep: type_rep.into(),
+                        type_rep,
                         clauses,
                     })
                 })
@@ -483,7 +477,5 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
     stmt_parser
         .repeated()
         .collect::<Vec<_>>()
-        .map(|statements| ProofFile {
-            statements: statements.into_iter().map(Box::new).collect(),
-        })
+        .map(|statements| ProofFile { statements })
 }

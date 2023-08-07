@@ -127,22 +127,22 @@ pub enum ExprKind {
 
     /// The annotation expression is used to represent an annotated
     /// expression with a type.
-    Ann(Expr, Expr),
+    Ann(Box<Expr>, Box<Expr>),
 
     /// The abstraction expression is used to represent a lambda
     /// abstraction.
     ///
     /// The first argument is the name of the parameter, and the
     /// second argument is the value of the parameter.
-    Lambda(Pattern, Expr),
+    Lambda(Pattern, Box<Expr>),
 
     /// The application expression is used to represent a function
     /// application.
-    Apply(Expr, Expr),
+    Apply(Box<Expr>, Box<Expr>),
 
     /// The let expression is used to represent a let binding
     /// expression.
-    Let(Pattern, Expr, Expr),
+    Let(Pattern, Box<Expr>, Box<Expr>),
 
     /// The pi expression is used to represent a dependent function
     /// type.
@@ -150,7 +150,7 @@ pub enum ExprKind {
     /// The first argument is the name of the parameter, the second
     /// argument is the type of the domain, and the third argument
     /// is the type of the codomain.
-    Pi(Identifier, Expr, Expr),
+    Pi(Identifier, Box<Expr>, Box<Expr>),
 }
 
 impl Debug for ExprKind {
@@ -210,9 +210,9 @@ pub type Identifier = String;
 /// defined by the regex pattern `[A-Z][a-zA-Z0-9_'.]*`.
 pub type Constructor = String;
 
-pub type Expr = Box<Spanned<ExprKind>>;
-pub type Pattern = Box<Spanned<PatternKind>>;
-pub type Stmt = Box<Spanned<StmtKind>>;
+pub type Expr = Spanned<ExprKind>;
+pub type Pattern = Spanned<PatternKind>;
+pub type Stmt = Spanned<StmtKind>;
 
 /// A spanned value is a value paired with a span. The span is used
 /// to represent the location of the value in the source code.
