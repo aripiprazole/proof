@@ -2,36 +2,10 @@ use std::{fmt::Debug, cell::RefCell, rc::Rc, hash::Hash};
 
 use chumsky::span::SimpleSpan;
 
-use crate::{state::{TermState, HasData}, parser::Span};
-
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub struct Parameter {
     pub pattern: Pattern,
     pub type_rep: Expr,
-}
-
-impl Parameter {
-    /// Creates a new debug wrapper.
-    pub fn debug<'state>(&self, state: &'state TermState) -> ParameterDebug<'state> {
-        ParameterDebug {
-            state,
-            parameter: self.clone(),
-        }
-    }
-}
-
-pub struct ParameterDebug<'state> {
-    pub state: &'state TermState,
-    pub parameter: Parameter,
-}
-
-impl Debug for ParameterDebug<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Parameter")
-            .field("pattern", &self.parameter.pattern.debug(self.state))
-            .field("type_rep", &self.parameter.type_rep.debug(self.state))
-            .finish()
-    }
 }
 
 /// Parameters are a list of implicit parameters.
@@ -41,74 +15,10 @@ pub struct Parameters {
     pub explicit_parameters: Vec<Parameter>,
 }
 
-impl Parameters {
-    /// Creates a new debug wrapper.
-    pub fn debug<'state>(&self, state: &'state TermState) -> ParametersDebug<'state> {
-        ParametersDebug {
-            state,
-            parameters: self.clone(),
-        }
-    }
-}
-
-pub struct ParametersDebug<'state> {
-    pub state: &'state TermState,
-    pub parameters: Parameters,
-}
-
-impl Debug for ParametersDebug<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Parameters")
-            .field(
-                "implicit_parameters",
-                &self
-                    .parameters
-                    .implicit_parameters
-                    .iter()
-                    .map(|value| value.debug(self.state))
-                    .collect::<Vec<_>>(),
-            )
-            .field(
-                "explicit_parameters",
-                &self
-                    .parameters
-                    .explicit_parameters
-                    .iter()
-                    .map(|value| value.debug(self.state))
-                    .collect::<Vec<_>>(),
-            )
-            .finish()
-    }
-}
-
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub struct DataConstructor {
     pub name: Constructor,
     pub type_rep: Expr,
-}
-
-impl DataConstructor {
-    /// Creates a new debug wrapper.
-    pub fn debug<'state>(&self, state: &'state TermState) -> DataConstructorDebug<'state> {
-        DataConstructorDebug {
-            state,
-            constructor: self.clone(),
-        }
-    }
-}
-
-pub struct DataConstructorDebug<'state> {
-    pub state: &'state TermState,
-    pub constructor: DataConstructor,
-}
-
-impl Debug for DataConstructorDebug<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DataConstructor")
-            .field("name", &self.constructor.name)
-            .field("type_rep", &self.constructor.type_rep.debug(self.state))
-            .finish()
-    }
 }
 
 /// A data statement is used to declare a new algebraic
@@ -127,38 +37,6 @@ pub struct Clause {
     pub term: Expr,
 }
 
-impl Clause {
-    /// Creates a new debug wrapper.
-    pub fn debug<'state>(&self, state: &'state TermState) -> ClauseDebug<'state> {
-        ClauseDebug {
-            state,
-            clause: self.clone(),
-        }
-    }
-}
-
-pub struct ClauseDebug<'state> {
-    pub state: &'state TermState,
-    pub clause: Clause,
-}
-
-impl Debug for ClauseDebug<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Clause")
-            .field(
-                "patterns",
-                &self
-                    .clause
-                    .patterns
-                    .iter()
-                    .map(|value| value.debug(self.state))
-                    .collect::<Vec<_>>(),
-            )
-            .field("term", &self.clause.term.debug(self.state))
-            .finish()
-    }
-}
-
 /// A val statement is used to declare a new value.
 #[derive(Debug, Hash, PartialEq, Eq, Clone)]
 pub struct FunStmt {
@@ -173,31 +51,6 @@ pub struct ProofFile {
     pub statements: Vec<Stmt>,
 }
 
-pub struct ProofFileDebug<'state> {
-    pub state: &'state TermState,
-    pub file: ProofFile,
-}
-
-impl ProofFile {
-    /// Creates a new debug wrapper.
-    pub fn debug<'state>(&self, state: &'state TermState) -> ProofFileDebug<'state> {
-        ProofFileDebug {
-            state,
-            file: self.clone(),
-        }
-    }
-}
-
-impl Debug for ProofFileDebug<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = f.debug_list();
-        for stmt in &self.file.statements {
-            debug.entry(&stmt.debug(self.state));
-        }
-        debug.finish()
-    }
-}
-
 /// A statement is a top-level declaration in the language.
 #[derive(Default, Debug, Hash, PartialEq, Eq, Clone)]
 pub enum StmtKind {
@@ -206,66 +59,6 @@ pub enum StmtKind {
     Data(DataStmt),
     Fun(FunStmt),
     Term(Expr),
-}
-
-/// An implementation of the `HasData` trait for the `TermKind`
-impl HasData for Spanned<StmtKind> {
-    type Output = StmtKind;
-
-    fn data(&self) -> &Self::Output {
-        &self.data
-    }
-
-    fn span(&self) -> Span {
-        self.span
-    }
-}
-
-pub struct StmtDebug<'state> {
-    pub state: &'state TermState,
-    pub stmt: Stmt,
-}
-
-impl Stmt {
-    /// Creates a new debug wrapper.
-    pub fn debug<'state>(&self, state: &'state TermState) -> StmtDebug<'state> {
-        StmtDebug { state, stmt: *self }
-    }
-}
-
-impl Debug for StmtDebug<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.state.stmts.get(self.stmt) {
-            StmtKind::Error => write!(f, "Error"),
-            StmtKind::Data(data_stmt) => f
-                .debug_struct("DataStmt")
-                .field("name", &data_stmt.name)
-                .field("type_rep", &data_stmt.type_rep.debug(self.state))
-                .field(
-                    "constructors",
-                    &data_stmt
-                        .constructors
-                        .into_iter()
-                        .map(|constructor| constructor.debug(self.state))
-                        .collect::<Vec<_>>(),
-                )
-                .finish(),
-            StmtKind::Fun(val_stmt) => f
-                .debug_struct("FunStmt")
-                .field("name", &val_stmt.name)
-                .field("type_rep", &val_stmt.type_rep.debug(self.state))
-                .field(
-                    "clauses",
-                    &val_stmt
-                        .clauses
-                        .iter()
-                        .map(|value| value.debug(self.state))
-                        .collect::<Vec<_>>(),
-                )
-                .finish(),
-            StmtKind::Term(term) => term.debug(self.state).fmt(f),
-        }
-    }
 }
 
 /// A pattern is used to represent a value that is being matched
@@ -279,54 +72,6 @@ pub enum PatternKind {
     Error,
     Variable(Identifier),
     Constructor(Constructor, Vec<Pattern>),
-}
-
-/// An implementation of the `HasData` trait for the `TermKind`
-impl HasData for Spanned<PatternKind> {
-    type Output = PatternKind;
-
-    fn data(&self) -> &Self::Output {
-        &self.data
-    }
-
-    fn span(&self) -> Span {
-        self.span
-    }
-}
-
-pub struct PatternDebug<'state> {
-    pub state: &'state TermState,
-    pub pattern: Pattern,
-}
-
-impl Pattern {
-    /// Creates a new debug wrapper.
-    pub fn debug<'state>(&self, state: &'state TermState) -> PatternDebug<'state> {
-        PatternDebug {
-            state,
-            pattern: *self,
-        }
-    }
-}
-
-impl Debug for PatternDebug<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.state.patterns.get(self.pattern) {
-            PatternKind::Error => write!(f, "Error"),
-            PatternKind::Variable(name) => write!(f, "Variable({})", name),
-            PatternKind::Constructor(name, patterns) => f
-                .debug_struct("Constructor")
-                .field("name", &name)
-                .field(
-                    "patterns",
-                    &patterns
-                        .into_iter()
-                        .map(|pattern| pattern.debug(self.state))
-                        .collect::<Vec<_>>(),
-                )
-                .finish(),
-        }
-    }
 }
 
 /// A variable is a name paired with a hole. The hole is used to
@@ -427,78 +172,6 @@ pub enum ExprKind {
     Pi(Identifier, Expr, Expr),
 }
 
-/// An implementation of the `HasData` trait for the `TermKind`
-impl HasData for Spanned<ExprKind> {
-    type Output = ExprKind;
-
-    fn data(&self) -> &Self::Output {
-        &self.data
-    }
-
-    fn span(&self) -> Span {
-        self.span
-    }
-}
-
-impl Expr {
-    /// Creates a new debug wrapper.
-    pub fn debug<'state>(&self, state: &'state TermState) -> TermDebug<'state> {
-        TermDebug { state, term: *self }
-    }
-}
-
-/// A wrapper for the `Term` type that implements the `Debug` trait.
-/// This wrapper is used to display the `Term` type in a more
-/// readable format.
-pub struct TermDebug<'state> {
-    pub state: &'state TermState,
-    pub term: Expr,
-}
-
-impl Debug for TermDebug<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.state.terms.get(self.term) {
-            ExprKind::Error => write!(f, "Error"),
-            ExprKind::Type(level) => write!(f, "Type({})", level),
-            ExprKind::Number(num) => write!(f, "Numer({})", num),
-            ExprKind::String(str) => write!(f, "String({})", str),
-            ExprKind::Constructor(con) => write!(f, "Constructor({})", con),
-            ExprKind::Hole(var) => write!(f, "Hole({})", var.name.unwrap_or("_".into())),
-            ExprKind::Ann(value, against) => write!(
-                f,
-                "Ann({:?}, {:?})",
-                value.debug(self.state),
-                against.debug(self.state)
-            ),
-            ExprKind::Lambda(parameter, value) => write!(
-                f,
-                "Lambda({:?}, {:?})",
-                parameter.debug(self.state),
-                value.debug(self.state)
-            ),
-            ExprKind::Apply(callee, argument) => write!(
-                f,
-                "Apply({:?}, {:?})",
-                callee.debug(self.state),
-                argument.debug(self.state)
-            ),
-            ExprKind::Let(pattern, value, expr) => write!(
-                f,
-                "Let({:?}, {:?}, {:?})",
-                pattern.debug(self.state),
-                value.debug(self.state),
-                expr.debug(self.state)
-            ),
-            ExprKind::Pi(name, domain, codomain) => write!(
-                f,
-                "Pi({name:?}, {:?}, {:?})",
-                domain.debug(self.state),
-                codomain.debug(self.state)
-            ),
-        }
-    }
-}
-
 /// Create a spanned value.
 pub fn spanned<T>(value: T, span: SimpleSpan) -> Spanned<T> {
     Spanned { data: value, span }
@@ -520,24 +193,9 @@ pub type Identifier = String;
 /// defined by the regex pattern `[A-Z][a-zA-Z0-9_'.]*`.
 pub type Constructor = String;
 
-macro_rules! new_interner_key {
-    ($name:ident) => {
-        #[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
-        pub struct $name(usize);
-
-        impl From<usize> for $name {
-            fn from(value: usize) -> Self {
-                Self(value)
-            }
-        }
-
-        impl From<$name> for usize {
-            fn from($name(value): $name) -> usize {
-                value
-            }
-        }
-    };
-}
+pub type Expr = Box<Spanned<ExprKind>>;
+pub type Pattern = Box<Spanned<PatternKind>>;
+pub type Stmt = Box<Spanned<StmtKind>>;
 
 /// A spanned value is a value paired with a span. The span is used
 /// to represent the location of the value in the source code.
@@ -546,7 +204,3 @@ pub struct Spanned<T> {
     pub data: T,
     pub span: SimpleSpan,
 }
-
-new_interner_key!(Expr);
-new_interner_key!(Pattern);
-new_interner_key!(Stmt);

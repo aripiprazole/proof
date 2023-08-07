@@ -1,16 +1,17 @@
 use ariadne::{Color, Label, Report, ReportKind, Source};
-use chumsky::{prelude::{Rich, Input}, Parser};
+use chumsky::{
+    prelude::{Input, Rich},
+    Parser,
+};
 
-pub mod parser;
-pub mod state;
 pub mod ast;
 pub mod hoas;
-pub mod display;
+pub mod parser;
 
 /// Parses a string into an [`ProofFile`].
 ///
 /// [`ProofFile`]: [`ProofFile`]
-pub fn parse(source: &str, state: &mut state::TermState) -> ast::ProofFile {
+pub fn parse(source: &str) -> ast::ProofFile {
     let filename = "terminal";
 
     let (tokens, lex_errors) = parser::lexer().parse(source).into_output_errors();
@@ -22,9 +23,7 @@ pub fn parse(source: &str, state: &mut state::TermState) -> ast::ProofFile {
     let tokens = tokens
         .as_slice()
         .spanned((source.len()..source.len()).into());
-    let (proof_file, errors) = parser::parser()
-        .parse_with_state(tokens, state)
-        .into_output_errors();
+    let (proof_file, errors) = parser::parser().parse(tokens).into_output_errors();
 
     // If there are no errors, return the parsed expression.
     if !errors.is_empty() || !lex_errors.is_empty() {
@@ -84,24 +83,20 @@ pub fn report_ariadne_errors(filename: &str, source: &str, errors: Vec<Rich<'_, 
     }
 }
 
-impl state::TermState {
-    /// Parses a file into an [`ProofFile`].
-    pub fn parse<const N: usize>(&mut self, lines: [&str; N]) -> ast::ProofFile {
-        let mut src = String::new();
+/// Parses a file into an [`ProofFile`].
+pub fn unlines<const N: usize>(lines: [&str; N]) -> ast::ProofFile {
+    let mut src = String::new();
 
-        for line in lines {
-            src.push_str(line);
-            src.push('\n');
-        }
-
-        parse(&src, self)
+    for line in lines {
+        src.push_str(line);
+        src.push('\n');
     }
+
+    parse(&src)
 }
 
-
 fn main() {
-    let mut state = state::TermState::default();
-    let ast = state.parse([
+    let ast = unlines([
         "// simple file",
         "data Bool : Type where",
         "  True  : Bool",
@@ -115,6 +110,6 @@ fn main() {
         "",
         "and True False;",
     ]);
-    
-    println!("{:#?}", ast.debug(&state));
+
+    println!("{ast:#?}");
 }

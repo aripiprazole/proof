@@ -1,8 +1,8 @@
 use std::fmt::Display;
 
-use chumsky::{prelude::*, extra::Err, error::Error, util::MaybeRef, text::keyword};
+use chumsky::{error::Error, extra::Err, prelude::*, text::keyword, util::MaybeRef};
 
-use crate::{ast::*, state::TermState};
+use crate::ast::*;
 
 /// The token type used by the lexer.
 #[derive(Debug, PartialEq, Clone)]
@@ -165,15 +165,12 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
     'tokens,
     ParserInput<'tokens, 'src>,
     ProofFile,
-    chumsky::extra::Full<Rich<'tokens, Token<'src>, Span>, TermState, ()>,
+    chumsky::extra::Err<Rich<'tokens, Token<'src>, Span>>,
 > {
     let pattern_parser = recursive(move |pattern| {
-        let id = select! {
-            Token::Identifier(str) => PatternKind::Variable(str.into()),
-        }
-        .map_with_span(spanned)
-        .map_with_state(|value, _, state: &mut TermState| state.patterns.intern(value))
-        .labelled("identifier pattern");
+        let id = select! { Token::Identifier(str) => PatternKind::Variable(str.into()) }
+            .map_with_span(spanned)
+            .labelled("identifier pattern");
 
         // A cons pattern is defined as a name but not followed by a list of patterns.
         //
@@ -181,7 +178,6 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
         let cons_id = select! { Token::Constructor(str) => str }
             .map(|name: &str| PatternKind::Constructor(name.into(), vec![]))
             .map_with_span(spanned)
-            .map_with_state(|value, _, state: &mut TermState| state.patterns.intern(value))
             .labelled("constructor identifier pattern");
 
         // A cons pattern is defined as a name followed by a list of patterns.
@@ -190,9 +186,12 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .then(select! { Token::Constructor(str) => str })
                 .then(pattern.clone().repeated().collect::<Vec<_>>())
                 .then_ignore(just(Token::Ctrl(')')))
-                .map(|((_, name), patterns)| PatternKind::Constructor(name.into(), patterns))
+                .map(|((_, name), patterns)| {
+                    let patterns = patterns.into_iter().map(Box::new).collect();
+
+                    PatternKind::Constructor(name.into(), patterns)
+                })
                 .map_with_span(spanned)
-                .map_with_state(|value, _, state: &mut TermState| state.patterns.intern(value))
                 .labelled("constructor pattern")
         });
 
@@ -213,7 +212,6 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 Token::String(str) => ExprKind::String(str.into()),
             }
             .map_with_span(spanned)
-            .map_with_state(|value, _, state: &mut TermState| state.terms.intern(value))
             .labelled("value");
 
             let group = expr
@@ -227,34 +225,33 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
         // Defines the parser for the application. It is the second
         // level of the expression parser.
         let app = recursive(|_| {
-            primary.clone().foldl_with_state(
-                primary.clone().repeated(),
-                |acc, next, state: &mut TermState| {
-                    let first = state.terms.span(acc);
-                    let end = state.terms.span(next);
+            primary
+                .clone()
+                .foldl(primary.clone().repeated(), |acc, next| {
+                    let first = acc.span;
+                    let end = next.span;
 
-                    let span = (first.start..end.end).into();
-                    let kind = ExprKind::Apply(acc, next);
-
-                    state.terms.intern(spanned(kind, span))
-                },
-            )
+                    Spanned {
+                        data: ExprKind::Apply(acc.into(), next.into()),
+                        span: (first.start..end.end).into(),
+                    }
+                })
         });
 
         // Defines an annotation parser. It does parse a type
         // annotation, which is a value followed by a type.
         let ann = recursive(|_| {
             app.clone()
-                .foldl_with_state(
+                .foldl(
                     just(Token::Ctrl(':')).then(expr.clone()).repeated(),
-                    |acc, (_, next), state: &mut TermState| {
-                        let first = state.terms.span(acc);
-                        let end = state.terms.span(next);
+                    |acc, (_, next)| {
+                        let first = acc.span;
+                        let end = next.span;
 
-                        let span = (first.start..end.end).into();
-                        let kind = ExprKind::Ann(acc, next);
-
-                        state.terms.intern(spanned(kind, span))
+                        Spanned {
+                            data: ExprKind::Ann(acc.into(), next.into()),
+                            span: (first.start..end.end).into(),
+                        }
                     },
                 )
                 .labelled("annotation")
@@ -264,20 +261,19 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
         // a function type, which is a type followed by a type.
         let pi = recursive(|_| {
             app.clone()
-                .map_with_state(|type_rep, _, state: &mut TermState| {
-                    match state.terms.get(type_rep) {
-                        ExprKind::Ann(name, type_rep) => match state.terms.get(name) {
-                            ExprKind::Hole(hole) => (hole.name.unwrap_or("_".into()), type_rep),
-                            _ => ("_".into(), type_rep),
-                        },
+                .map(|type_rep| match type_rep.data {
+                    ExprKind::Ann(name, type_rep) => match name.data {
+                        ExprKind::Hole(hole) => (hole.name.unwrap_or("_".into()), type_rep),
                         _ => ("_".into(), type_rep),
-                    }
+                    },
+                    _ => ("_".into(), type_rep.into()),
                 })
                 .then(just(Token::Identifier("->")))
                 .then(expr.clone())
-                .map(|(((name, parameter), _), value)| ExprKind::Pi(name, parameter, value))
+                .map(|(((name, parameter), _), value)| {
+                    ExprKind::Pi(name, parameter, value.into())
+                })
                 .map_with_span(spanned)
-                .map_with_state(|value, _, state: &mut TermState| state.terms.intern(value))
                 .labelled("pi expression")
         });
 
@@ -288,9 +284,8 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .then(pattern_parser.clone())
                 .then_ignore(just(Token::Identifier(".")))
                 .then(expr.clone())
-                .map(|((_, pattern), expr)| ExprKind::Lambda(pattern, expr))
+                .map(|((_, pattern), expr)| ExprKind::Lambda(pattern.into(), expr.into()))
                 .map_with_span(spanned)
-                .map_with_state(|value, _, state: &mut TermState| state.terms.intern(value))
                 .labelled("lambda exprression")
         });
 
@@ -303,9 +298,10 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .then(expr.clone())
                 .then_ignore(just(Token::In))
                 .then(expr.clone())
-                .map(|(((_, pattern), value), expr)| ExprKind::Let(pattern, value, expr))
+                .map(|(((_, pattern), value), expr)| {
+                    ExprKind::Let(pattern.into(), value.into(), expr.into())
+                })
                 .map_with_span(spanned)
-                .map_with_state(|value, _, state: &mut TermState| state.terms.intern(value))
                 .labelled("let exprression")
                 .as_context()
         });
@@ -315,21 +311,18 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
         pi.or(ann)
             .or(lambda)
             .or(let_expr)
-            .recover_with(via_parser(
-                nested_delimiters(
-                    Token::Ctrl('('),
-                    Token::Ctrl(')'),
-                    [
-                        (Token::Ctrl('['), Token::Ctrl(']')),
-                        (Token::Ctrl('{'), Token::Ctrl('}')),
-                    ],
-                    |span| Spanned {
-                        data: ExprKind::Error,
-                        span,
-                    },
-                )
-                .map_with_state(|value, _, state: &mut TermState| state.terms.intern(value)),
-            ))
+            .recover_with(via_parser(nested_delimiters(
+                Token::Ctrl('('),
+                Token::Ctrl(')'),
+                [
+                    (Token::Ctrl('['), Token::Ctrl(']')),
+                    (Token::Ctrl('{'), Token::Ctrl('}')),
+                ],
+                |span| Spanned {
+                    data: ExprKind::Error,
+                    span,
+                },
+            )))
             .labelled("expression")
             .as_context()
     });
@@ -343,9 +336,8 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             expr_parser
                 .clone()
                 .then_ignore(just(Token::Ctrl(';')))
-                .map(StmtKind::Term)
+                .map(|term| StmtKind::Term(term.into()))
                 .map_with_span(spanned)
-                .map_with_state(|value, _, state: &mut TermState| state.stmts.intern(value))
                 .labelled("expression statement")
         });
 
@@ -358,12 +350,12 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .then(expr_parser.clone())
                 .map(|(_, type_rep)| type_rep)
                 .or_not()
-                .map_with_state(|type_rep, _, state: &mut TermState| match type_rep {
+                .map(|type_rep| match type_rep {
                     Some(type_rep) => type_rep,
-                    None => state.terms.intern(Spanned {
+                    None => Spanned {
                         data: ExprKind::Hole(Hole::default()),
                         span: (0..0).into(),
-                    }),
+                    },
                 })
         });
 
@@ -372,7 +364,7 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .then(type_rep.clone())
                 .map(|(name, type_rep)| DataConstructor {
                     name: name.into(),
-                    type_rep,
+                    type_rep: type_rep.into(),
                 })
                 .labelled("data constructor")
         });
@@ -381,7 +373,10 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
             pattern_parser
                 .clone()
                 .then(type_rep.clone())
-                .map(|(pattern, type_rep)| Parameter { pattern, type_rep })
+                .map(|(pattern, type_rep)| Parameter {
+                    pattern: pattern.into(),
+                    type_rep: type_rep.into(),
+                })
         });
 
         let implicit_parameters = recursive(|_| {
@@ -425,12 +420,11 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                             implicit_parameters: implicits.unwrap_or_default(),
                             explicit_parameters: explicits.unwrap_or_default(),
                         },
-                        type_rep,
+                        type_rep: type_rep.into(),
                         constructors: vec,
                     })
                 })
                 .map_with_span(spanned)
-                .map_with_state(|value, _, state: &mut TermState| state.stmts.intern(value))
                 .labelled("data statement")
         });
 
@@ -444,7 +438,10 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 )
                 .then_ignore(just(Token::Identifier("=")))
                 .then(expr_parser.clone())
-                .map(|((_, patterns), term)| Clause { patterns, term })
+                .map(|((_, patterns), term)| Clause {
+                    patterns: patterns.into_iter().map(Box::new).collect(),
+                    term: term.into(),
+                })
                 .labelled("clause")
                 .as_context()
         });
@@ -463,12 +460,11 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
 
                     StmtKind::Fun(FunStmt {
                         name: name.into(),
-                        type_rep,
+                        type_rep: type_rep.into(),
                         clauses,
                     })
                 })
                 .map_with_span(spanned)
-                .map_with_state(|value, _, state: &mut TermState| state.stmts.intern(value))
         });
 
         data_stmt
@@ -486,6 +482,8 @@ pub fn parser<'tokens, 'src: 'tokens>() -> impl Parser<
     // a list of clauses, and a semicolon.
     stmt_parser
         .repeated()
-        .collect()
-        .map(|statements| ProofFile { statements })
+        .collect::<Vec<_>>()
+        .map(|statements| ProofFile {
+            statements: statements.into_iter().map(Box::new).collect(),
+        })
 }
