@@ -107,6 +107,8 @@ pub enum ExprKind {
     #[default]
     Error,
 
+    Hole,
+
     /// The type expression is used to represent the type of types.
     Type(usize),
 
@@ -123,7 +125,7 @@ pub enum ExprKind {
     Constructor(String),
 
     /// The variable expression is used to represent a variable
-    Hole(String),
+    Variable(String),
 
     /// The annotation expression is used to represent an annotated
     /// expression with a type.
@@ -157,11 +159,12 @@ impl Debug for ExprKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Error => write!(f, "Error"),
+            Self::Hole => write!(f, "Hole"),
             Self::Type(arg0) => arg0.fmt(f),
             Self::Number(arg0) => arg0.fmt(f),
             Self::String(arg0) => arg0.fmt(f),
             Self::Constructor(arg0) => arg0.fmt(f),
-            Self::Hole(arg0) => arg0.fmt(f),
+            Self::Variable(arg0) => arg0.fmt(f),
             Self::Ann(value, against) => write!(f, "Ann({:?}, {:?})", value, against),
             Self::Lambda(parameter, value) => f
                 .debug_struct("Lambda")

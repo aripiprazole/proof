@@ -1,9 +1,40 @@
 use std::rc::Rc;
 
+use fxhash::FxHashMap;
+
 use crate::{
     ast::{Expr, Identifier, Pattern},
     parser::Span,
 };
+
+pub struct Env {
+    pub env: FxHashMap<String, Term>,
+}
+
+impl Env {
+    pub fn extend(&self, name: String, term: Term) -> Self {
+        let mut env = self.env.clone();
+        env.insert(name, term);
+        Self { env }
+    }
+}
+
+pub struct Ctx {
+    pub ctx: FxHashMap<String, Term>,
+}
+
+impl Ctx {
+    pub fn extend(&self, name: String, term: Term) -> Self {
+        let mut ctx = self.ctx.clone();
+        ctx.insert(name, term);
+        Self { ctx }
+    }
+}
+
+pub struct Error {
+    pub message: String,
+    pub span: Option<Span>,
+}
 
 /// Represents a HOAS term. It's used for representing
 /// the AST, but also for representing the type of a
@@ -15,12 +46,12 @@ use crate::{
 pub enum Term {
     #[default]
     Error,
-    
+
+    Hole,
     Number(isize),
     String(String),
     Constructor(String),
     Variable(String),
-    Ann(Box<Term>, Box<Term>),
     Let(Pattern, Box<Term>, Rc<dyn Fn(Box<Term>) -> Term>),
     Pi(Identifier, Box<Term>, Rc<dyn Fn(Box<Term>) -> Term>),
     Lambda(Pattern, Rc<dyn Fn(Box<Term>) -> Term>),
@@ -29,84 +60,83 @@ pub enum Term {
     /// Represents a type universe with a level
     /// of `usize`.
     Type(usize),
-
-    /// This is used to represent the location of a term
-    /// in the source code.
-    /// 
-    /// This is a variant, because we don't want to
-    /// represent the location of a term in the type
-    /// of a term, as we want to construct terms a lot
-    /// of times.
-    SrcPos(Span, Box<Term>),
 }
 
-impl From<Expr> for Term {
-    /// This converts the concrete syntax tree into a HOAS
+impl Term {
+    /// This evaluates the concrete syntax tree as a HOAS
     /// term.
-    /// 
+    pub fn eval(&self, env: &Env, ctx: &Ctx) -> Result<Term, Error> {
+        todo!()
+    }
+}
+
+impl Expr {
+    /// This checks the concrete syntax tree as a HOAS
+    /// term.
+    pub fn check(&self, env: &Env, ctx: &Ctx, type_rep: Term) -> Result<Term, Error> {
+        todo!()
+    }
+
+    /// This infers the concrete syntax tree as a HOAS
+    /// term.
+    ///
     /// It does also provides the location of the term
     /// in the source code, as the [Expr] is based on
     /// a [crate::ast::Spanned] type.
-    fn from(value: Expr) -> Self {
+    pub fn infer(&self, env: &Env, ctx: &Ctx) -> Result<Term, Error> {
+        self.imp_infer(env, ctx).map_err(|span| Error {
+            message: span.message,
+            span: Some(self.span),
+        })
+    }
+
+    /// This infers the concrete syntax tree as a HOAS
+    /// term.
+    ///
+    /// It does also provides the location of the term
+    /// in the source code, as the [Expr] is based on
+    /// a [crate::ast::Spanned] type.
+    pub fn imp_infer(&self, env: &Env, ctx: &Ctx) -> Result<Term, Error> {
         use crate::ast::ExprKind::*;
 
         // Creates a HOAS term from an AST expression.
-        let term = match value.data {
-            Error => Self::Error,
-            Type(level) => Self::Type(level),
-            Number(number) => Self::Number(number),
-            String(string) => Self::String(string),
-            Constructor(constructor) => Self::Constructor(constructor),
-            Hole(hole) => Self::Variable(hole),
-            Ann(value, against) => {
-                Self::Ann(Self::from(*value).into(), Self::from(*against).into())
-            }
-            Lambda(parameter, value) => {
-                let value = Self::from(*value);
+        Ok(match self.data.clone() {
+            Error => Term::Error,
+            Hole => Term::Hole,
+            Type(level) => Term::Type(level),
+            Number(number) => Term::Number(number),
+            String(string) => Term::String(string),
+            Constructor(constructor) => Term::Constructor(constructor),
+            Variable(hole) => Term::Variable(hole),
+            Ann(value, type_rep) => {
+                let type_rep = type_rep.infer(env, ctx)?;
 
-                Self::Lambda(
-                    parameter,
-                    Rc::new(move |_| {
-                        // TODO: Substitution
-                        value.clone()
-                    }),
-                )
+                value.check(env, ctx, type_rep)?
+            }
+            Lambda(..) => {
+                panic!("Can't infer lambda expression")
             }
             Apply(callee, argument) => {
-                let callee = Self::from(*callee);
-                let argument = Self::from(*argument);
+                let callee = callee.infer(env, ctx)?;
 
-                Self::Apply(Box::new(callee), Box::new(argument))
+                match callee {
+                    Term::Pi(_, domain, f) => {
+                        argument.check(env, ctx, *domain.clone())?;
+                        f(domain)
+                    }
+                    _ => {
+                        panic!("Can't infer application")
+                    }
+                }
             }
             Let(name, value, expr) => {
-                let value = Self::from(*value);
-                let expr = Self::from(*expr);
+                value.check(env, ctx, Term::Type(0))?;
 
-                Self::Let(
-                    name,
-                    value.into(),
-                    Rc::new(move |_| {
-                        // TODO: Substitution
-                        expr.clone()
-                    }),
-                )
+                todo!()
             }
             Pi(name, domain, codomain) => {
-                let domain = Self::from(*domain);
-                let codomain = Self::from(*codomain);
-
-                Self::Pi(
-                    name,
-                    domain.into(),
-                    Rc::new(move |_| {
-                        // TODO: Substitution
-                        codomain.clone()
-                    }),
-                )
+                todo!()
             }
-        };
-
-        // Converts the location's into a HOAS location's.
-        Self::SrcPos(value.span, term.into())
+        })
     }
 }
